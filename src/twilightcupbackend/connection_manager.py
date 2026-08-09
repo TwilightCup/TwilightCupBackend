@@ -1,0 +1,698 @@
+"""WebSocket 连接管理器：鉴权握手、消息分发、广播、断连清理。
+
+参考 fakeway webservice.py 的 FastAPI WS 服务端模式（accept + recv 循环 +
+按比赛广播 + finally 断连清理）。所有内存状态变更在事件循环内，无锁。
+M4 实现：连接/鉴权、聊天中转、系统消息广播、导播只读；命令与状态机在 M5/M6 注入。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from logging import Logger, getLogger
+from typing import TYPE_CHECKING, Any
+
+import jwt
+from fastapi import WebSocket
+from pydantic import ValidationError
+
+from . import i18n
+from .auth import decode_token
+from .config import Settings
+from .controllers import DBController
+from .datatypes import (
+    Account,
+    AccountType,
+    ChatMessage,
+    ChatSenderRole,
+    MatchPhase,
+    MatchStatus,
+    Seat,
+)
+from .protocol import (
+    ClientAttemptSkip,
+    ClientChat,
+    ClientDirectorSubscribe,
+    ClientDraftSync,
+    ClientForfeitSignal,
+    ClientHeartbeat,
+    ClientLevelTimeUpload,
+    ClientMessage,
+    ClientProjectComplete,
+    ClientReconnectResync,
+    ClientRefereeEditVerdict,
+    ClientRefereeEndMatch,
+    ClientRefereeManualStart,
+    ClientRefereeMarkPrep,
+    ClientRefereeSelectPick,
+    ClientRefereeTerminateRound,
+    ClientRefereeVerdict,
+    ServerMessage,
+    SrvAuthError,
+    SrvAuthOk,
+    SrvChat,
+    SrvDraftState,
+    SrvError,
+    SrvMatchStatus,
+    SrvPhaseChange,
+    SrvReadyState,
+    SrvSeatState,
+    SrvSystem,
+    parse_client_message,
+)
+from .stores import Connection, MatchRegistry, MatchStore
+
+if TYPE_CHECKING:
+    from .match_fsm import MatchEngine
+    from .tournament_engine import TournamentEngine
+
+# 命令路由器类型：处理 ``!`` 开头的聊天命令，返回是否已被处理。
+CommandRouter = Callable[[Connection, str], Awaitable[bool]]
+
+# 暂停（PAUSED）期间需拒绝的比赛类 WS 动作。chat/heartbeat/director_subscribe/
+# draft_sync/reconnect_resync 不拦（聊天、保活、草稿同步、只读快照仍可用）。
+_PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
+    ClientRefereeMarkPrep,
+    ClientRefereeSelectPick,
+    ClientRefereeManualStart,
+    ClientRefereeVerdict,
+    ClientRefereeEditVerdict,
+    ClientRefereeTerminateRound,
+    ClientLevelTimeUpload,
+    ClientAttemptSkip,
+    ClientProjectComplete,
+    ClientForfeitSignal,
+)
+
+
+def normalize_draft(state: dict[str, Any]) -> dict[str, Any]:
+    """清洗裁判上报的草稿态，仅保留展示所需字段（见 backend-banpick-persist 契约）。
+
+    丢弃 stage / rollA·B / 计时器标志等 UI 态；缺字段补空集合 / null，
+    保证裁判端旧版漏字段也不会 500。
+    """
+
+    def norm_action(a: dict[str, Any]) -> dict[str, Any]:
+        return {"by": a["by"], "code": str(a["code"]), "kind": a["kind"]}
+
+    return {
+        "actions": [norm_action(a) for a in state.get("actions", [])],
+        "picks": [
+            {"by": p["by"], "code": str(p["code"])} for p in state.get("picks", [])
+        ],
+        "bannedTags": [str(t) for t in state.get("bannedTags", [])],
+        "tagBanBy": {
+            "A": state.get("tagBanBy", {}).get("A"),
+            "B": state.get("tagBanBy", {}).get("B"),
+        },
+    }
+
+
+class ConnectionManager:
+    def __init__(
+        self,
+        db: DBController,
+        registry: MatchRegistry,
+        settings: Settings,
+        logger: Logger | None = None,
+    ) -> None:
+        self.db = db
+        self.registry = registry
+        self.settings = settings
+        self.logger = logger or getLogger("ConnectionManager")
+        # M5 注入：处理 ``!`` 命令
+        self.command_router: CommandRouter | None = None
+        # M6 注入：比赛状态机
+        self.match_engine: MatchEngine | None = None
+        # M12 注入：赛程引擎（单场结束触发对阵推进）
+        self.tournament_engine: TournamentEngine | None = None
+
+    # ------------------------------------------------------------------
+    # 连接生命周期
+    # ------------------------------------------------------------------
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        token: str,
+        requested_seat: str | None = None,
+        requested_match: str | None = None,
+    ) -> Connection | None:
+        """鉴权并登记连接；失败时接受后发送 auth_error 并关闭。
+
+        requested_seat 指定时，要求该账号被指派为此比赛的该座位（支持多角色账号
+        以特定身份连接，如 admin 同时以裁判与导播身份各开一条连接）。
+        requested_match 指定时（如裁判多标签页选某场），连到该比赛
+        并校验账号是其成员；否则自动挑选该账号最新一场（兼容选手/导播）。
+        """
+        account_id, error = self._authenticate(token)
+        if error is not None or account_id is None:
+            await websocket.accept()
+            await self._send_model(
+                websocket, SrvAuthError(msg=error or self.tr_default("error.auth_failed"))
+            )
+            await websocket.close()
+            return None
+
+        account = self.db.accounts.get(account_id)
+        if account is None:
+            await websocket.accept()
+            await self._send_model(
+                websocket, SrvAuthError(msg=self.tr_default("error.account_missing"))
+            )
+            await websocket.close()
+            return None
+
+        match, seat, resolve_err = self._resolve(
+            account, requested_seat, requested_match
+        )
+        if match is None or seat is None:
+            await websocket.accept()
+            await self._send_model(
+                websocket,
+                SrvAuthError(
+                    msg=resolve_err or self.tr_default("error.no_running_match_wait")
+                ),
+            )
+            await websocket.close()
+            return None
+
+        await websocket.accept()
+        store = self.registry.get_or_create(match)
+        conn = Connection(
+            websocket=websocket,
+            account_id=account.id,
+            display_name=account.display_name,
+            seat=seat,
+            match_id=match.id,
+        )
+        # 同座位重连：导播允许多连接并存（网页+OBS 等）；选手/裁判替换旧连接
+        if seat == Seat.DIRECTOR:
+            store.directors.add(conn)
+        else:
+            old = store.connections.get(seat)
+            store.connections[seat] = conn
+            if old is not None:
+                await self._safe_close(old.websocket)
+
+        await self._send(
+            conn,
+            SrvAuthOk(
+                account_id=account.id,
+                display_name=account.display_name,
+                seat=seat.name,
+                match_id=match.id,
+                match_name=match.name,
+                player_a_name=self._display_name_of(match.player_a_id),
+                player_b_name=self._display_name_of(match.player_b_id),
+            ),
+        )
+        await self._send(
+            conn, SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready)
+        )
+        await self._send(conn, SrvPhaseChange(phase=store.phase))
+        # 补发当前 ban/pick 草稿状态（新连导播立即拿到进度）
+        if store.draft_state is not None:
+            await self._send(conn, SrvDraftState(state=store.draft_state))
+        # 座席在线状态广播（backend-seat-presence）：选手连入通知全员
+        # （新连接自身由下方补发覆盖，故排除，避免重复）；初始化序列末尾
+        # 给新连接补发全量在线状态（重连方消除陈旧离线态）
+        if seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+            await self.broadcast_match(
+                store.id,
+                SrvSeatState(seat=seat.name, online=True),
+                exclude=conn,
+            )
+        for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+            await self._send(
+                conn,
+                SrvSeatState(
+                    seat=player_seat.name, online=player_seat in store.connections
+                ),
+            )
+        self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
+        return conn
+
+    async def disconnect(self, conn: Connection) -> None:
+        store = self.registry.get(conn.match_id)
+        if store is None:
+            return
+        was_current = store.connections.get(conn.seat) is conn
+        self._remove_connection(store, conn)
+        if was_current:
+            await self._broadcast_seat_state(store, conn.seat)
+        self.logger.info(
+            "Seat %s disconnected from match %s.", conn.seat.name, conn.match_id
+        )
+
+    def _remove_connection(self, store: MatchStore, conn: Connection) -> None:
+        """从比赛移除一条连接：导播从集合 discard，其余按座位删除。"""
+        if conn.seat == Seat.DIRECTOR:
+            store.directors.discard(conn)
+        elif store.connections.get(conn.seat) is conn:
+            del store.connections[conn.seat]
+
+    async def _broadcast_seat_state(self, store: MatchStore, seat: Seat) -> None:
+        """广播座席离线状态（仅选手座席；见 backend-seat-presence §2）。
+
+        连入侧广播在 ``connect`` 内直接做（online 恒 true）；本方法只走
+        断开/踢出路径，广播的是删除后的最终状态（座位无连接即 offline）。
+        """
+        if seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+            await self.broadcast_match(
+                store.id,
+                SrvSeatState(seat=seat.name, online=seat in store.connections),
+            )
+
+    async def kick_players(self, match_id: str) -> None:
+        """关闭并移除该比赛的双方选手连接（比赛结束自动断连用；裁判/导播保留）。"""
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        for seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+            conn = store.connections.pop(seat, None)
+            if conn is not None:
+                await self._safe_close(conn.websocket)
+                await self._broadcast_seat_state(store, seat)
+                self.logger.info(
+                    "Seat %s kicked from match %s (match ended).",
+                    seat.name,
+                    match_id,
+                )
+
+    async def pause_match(self, match_id: str) -> None:
+        """暂停比赛的 WS 副作用：取消进行中的开始倒计时、广播系统消息与
+        ``match_status``、踢出双方选手连接（释放占用）。
+
+        由 REST ``POST /me/matches/{id}/pause`` 在置 ``status=PAUSED`` 后调用。
+        """
+        store = self.registry.get(match_id)
+        if store is not None:
+            # 取消可能正在进行的开始倒计时，避免暂停期间触发 _begin_round。
+            # 若原本处于 COUNTDOWN，回退到 PREP，便于 resume 后裁判重新开始。
+            if store.countdown_timer is not None:
+                await store.countdown_timer.cancel()
+                store.countdown_timer = None
+                store.countdown_source = None
+            if store.phase == MatchPhase.COUNTDOWN:
+                store.phase = MatchPhase.PREP
+        await self.system_message(match_id, self.tr(match_id, "pause.message"), kind="pause")
+        await self.broadcast_match(match_id, SrvMatchStatus(status=MatchStatus.PAUSED))
+        await self.kick_players(match_id)
+
+    async def resume_match(self, match_id: str) -> None:
+        """恢复比赛的 WS 副作用：广播系统消息与 ``match_status``。
+
+        由 REST ``POST /me/matches/{id}/resume`` 在置 ``status=RUNNING`` 后调用；
+        选手随后自行重连（``find_running_for_player`` 重新命中本场）。
+        """
+        await self.system_message(match_id, self.tr(match_id, "resume.message"), kind="resume")
+        await self.broadcast_match(match_id, SrvMatchStatus(status=MatchStatus.RUNNING))
+
+    # ------------------------------------------------------------------
+    # 消息分发
+    # ------------------------------------------------------------------
+
+    async def handle(self, conn: Connection, raw: str) -> None:
+        try:
+            msg = parse_client_message(raw)
+        except ValidationError:
+            await self._send(
+                conn,
+                SrvError(code=400, msg=self.tr(conn.match_id, "error.bad_message")),
+            )
+            return
+
+        if conn.read_only and not isinstance(
+            msg, (ClientDirectorSubscribe, ClientHeartbeat)
+        ):
+            await self._send(
+                conn,
+                SrvError(code=403, msg=self.tr(conn.match_id, "error.director_readonly")),
+            )
+            return
+
+        await self._dispatch(conn, msg)
+
+    async def _dispatch(self, conn: Connection, msg: ClientMessage) -> None:
+        # 暂停期间拒绝比赛类动作（pause 由 REST 触发，resume 后恢复）。
+        store = self.registry.get(conn.match_id)
+        if (
+            store is not None
+            and store.match.status == MatchStatus.PAUSED
+            and isinstance(msg, _PAUSED_BLOCKED_ACTIONS)
+        ):
+            await self._send(
+                conn,
+                SrvError(code=409, msg=self.tr(conn.match_id, "error.match_paused")),
+            )
+            return
+        engine = self._require_engine(conn)
+        match msg:
+            case ClientChat(text=text):
+                await self._on_chat(conn, text)
+            case ClientDirectorSubscribe() | ClientHeartbeat():
+                pass
+            case ClientDraftSync(state=st):
+                # 裁判上报 ban/pick 草稿状态 → 存储 + 转发给全员（含导播）
+                if await self._require_seat(conn, Seat.REFEREE):
+                    store = self.registry.get(conn.match_id)
+                    if store is not None:
+                        store.draft_state = st
+                        # 顺手落库草稿快照（方案 A：复用 draft_sync，零新增协议）
+                        await self._persist_draft_snapshot(store, st)
+                        await self.broadcast_match(
+                            conn.match_id, SrvDraftState(state=st)
+                        )
+            case ClientRefereeMarkPrep():
+                await engine.begin_prep(conn.match_id)
+            case ClientRefereeSelectPick(
+                pick_code=pick_code, tags=tags, retry_count=retry
+            ):
+                await engine.select_pick(conn.match_id, pick_code, tags, retry)
+            case ClientRefereeManualStart():
+                await engine.manual_start(conn.match_id)
+            case ClientRefereeVerdict(round_id=rid, verdict=v):
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.on_verdict(conn.match_id, rid, v)
+            case ClientRefereeEditVerdict(round_id=rid, new_verdict=nv):
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.on_edit_verdict(conn.match_id, rid, nv)
+            case ClientRefereeTerminateRound(round_id=rid, reason=r):
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.terminate_round(conn.match_id, rid, r)
+            # 手动结束比赛：终态操作，不加入 _PAUSED_BLOCKED_ACTIONS
+            # （暂停中被放弃的比赛也需能经裁判收尾）
+            case ClientRefereeEndMatch():
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.end_match(conn.match_id)
+            case ClientReconnectResync(round_id=rid):
+                if await self._require_player(conn):
+                    await engine.on_reconnect_resync(conn.match_id, conn.seat, rid)
+            case ClientLevelTimeUpload(
+                round_id=rid,
+                level_index=li,
+                this_level_ms=t,
+                total_ms=tm,
+                invalid_reasons=ir,
+            ):
+                if await self._require_player(conn):
+                    await engine.on_level_time_upload(
+                        conn.match_id, conn.seat, rid, li, t, tm, ir
+                    )
+            case ClientAttemptSkip(round_id=rid, attempt_index=ai):
+                if await self._require_player(conn):
+                    await engine.on_attempt_skip(conn.match_id, conn.seat, rid, ai)
+            case ClientProjectComplete(round_id=rid, final_total_ms=ft):
+                if await self._require_player(conn):
+                    await engine.on_project_complete(conn.match_id, conn.seat, rid, ft)
+            case ClientForfeitSignal(round_id=rid, reason=r):
+                if await self._require_player(conn):
+                    await engine.on_forfeit(conn.match_id, conn.seat, rid, r)
+            case _:
+                await self._send(
+                    conn,
+                    SrvError(
+                        code=501,
+                        msg=self.tr(
+                            conn.match_id, "error.unimplemented", type=msg.type
+                        ),
+                    ),
+                )
+
+    async def _require_seat(self, conn: Connection, seat: Seat) -> bool:
+        if conn.seat != seat:
+            await self._send(
+                conn,
+                SrvError(
+                    code=403,
+                    msg=self.tr(
+                        conn.match_id,
+                        "error.wrong_seat",
+                        seat=i18n.seat_name(seat, self.locale_for(conn.match_id)),
+                    ),
+                ),
+            )
+            return False
+        return True
+
+    async def _require_player(self, conn: Connection) -> bool:
+        if conn.seat not in (Seat.PLAYER_A, Seat.PLAYER_B):
+            await self._send(
+                conn,
+                SrvError(code=403, msg=self.tr(conn.match_id, "error.players_only")),
+            )
+            return False
+        return True
+
+    def _require_engine(self, conn: Connection) -> MatchEngine:
+        if self.match_engine is None:  # pragma: no cover - 由 main 注入
+            raise RuntimeError("match_engine 未注入")
+        return self.match_engine
+
+    async def _persist_draft_snapshot(self, store: MatchStore, state: Any) -> None:
+        """将裁判上报的草稿态清洗后 upsert 到 match_log（方案 A）。
+
+        normalize 在本协议边界完成（仅保留展示字段）；落库借引擎的
+        ``save_draft_snapshot``（按需创建 match_log）。失败仅记日志，不影响转发。
+        """
+        engine = self.match_engine
+        if engine is None:
+            return
+        try:
+            snapshot = normalize_draft(state) if isinstance(state, dict) else None
+            engine.save_draft_snapshot(store, snapshot)
+        except Exception:
+            # 落库不应阻塞 draft_sync 转发，仅记日志
+            self.logger.exception("持久化草稿快照失败 match_id=%s", store.id)
+
+    async def _on_chat(self, conn: Connection, text: str) -> None:
+        """聊天中转。
+
+        输入（含 ``!`` 命令）一律先作为普通聊天消息广播留存（让发送方与各方都能看到
+        所输入的命令），再交命令路由器执行。命令路由器的反馈以系统消息形式发出。
+        """
+        await self._relay_chat(conn, text)
+        if text.startswith("!") and self.command_router is not None:
+            await self.command_router(conn, text)
+
+    async def _relay_chat(self, conn: Connection, text: str) -> None:
+        sender_role = (
+            ChatSenderRole.PLAYER
+            if conn.seat in (Seat.PLAYER_A, Seat.PLAYER_B)
+            else ChatSenderRole.REFEREE
+        )
+        chat = ChatMessage(
+            match_id=conn.match_id,
+            sender_role=sender_role,
+            sender_id=conn.account_id,
+            sender_name=conn.display_name,
+            text=text,
+        )
+        self.db.chat_messages.insert(chat)
+        await self.broadcast_match(
+            conn.match_id,
+            SrvChat(
+                sender_id=conn.account_id,
+                sender_name=conn.display_name,
+                seat=conn.seat.name,
+                text=text,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # 广播与系统消息
+    # ------------------------------------------------------------------
+
+    async def broadcast_match(
+        self,
+        match_id: str,
+        msg: ServerMessage,
+        *,
+        exclude: Connection | None = None,
+    ) -> None:
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        payload = msg.model_dump_json()
+        conns = list(store.connections.values()) + list(store.directors)
+        dead: list[Connection] = []
+        for conn in conns:
+            if conn is exclude:
+                continue
+            try:
+                await conn.websocket.send_text(payload)
+            except Exception:
+                dead.append(conn)
+                self.logger.debug("广播发送失败，清理该连接。", exc_info=True)
+        # 清理半开/已断连接，避免导播多连接场景下累积垃圾
+        for conn in dead:
+            self._remove_connection(store, conn)
+
+    async def send_to_seat(self, match_id: str, seat: Seat, msg: ServerMessage) -> None:
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        if seat == Seat.DIRECTOR:
+            for conn in list(store.directors):
+                await self._send(conn, msg)
+            return
+        conn = store.connections.get(seat)
+        if conn is not None:
+            await self._send(conn, msg)
+
+    async def send(self, conn: Connection, msg: ServerMessage) -> None:
+        """向单个连接发送消息。"""
+        await self._send(conn, msg)
+
+    async def system_message(
+        self, match_id: str, text: str, kind: str = "info"
+    ) -> None:
+        """持久化（系统聊天日志）并广播系统消息。"""
+        chat = ChatMessage(
+            match_id=match_id,
+            sender_role=ChatSenderRole.SYSTEM,
+            sender_id=None,
+            sender_name="System",
+            text=text,
+            is_system=True,
+        )
+        self.db.chat_messages.insert(chat)
+        await self.broadcast_match(match_id, SrvSystem(text=text, kind=kind))
+
+    # ------------------------------------------------------------------
+    # 辅助
+    # ------------------------------------------------------------------
+
+    def locale_for(self, match_id: str) -> str:
+        """比赛当前语言（store 不存在时回默认语言）。"""
+        store = self.registry.get(match_id)
+        return store.locale if store is not None else self.settings.default_locale
+
+    def tr(self, match_id: str, key: str, **kw: object) -> str:
+        """按比赛语言渲染系统消息。"""
+        return i18n.t(self.locale_for(match_id), key, **kw)
+
+    def tr_default(self, key: str, **kw: object) -> str:
+        """按默认语言渲染（握手期 store 尚未建立时用）。"""
+        return i18n.t(self.settings.default_locale, key, **kw)
+
+    def _authenticate(self, token: str) -> tuple[str | None, str | None]:
+        try:
+            claims = decode_token(token, self.settings)
+        except jwt.PyJWTError:
+            return None, self.tr_default("error.token_invalid_or_expired")
+        sub = claims.get("sub")
+        if not isinstance(sub, str):
+            return None, self.tr_default("error.token_invalid")
+        return sub, None
+
+    def _resolve(
+        self,
+        account: Account,
+        requested_seat: str | None,
+        requested_match: str | None,
+    ) -> tuple[Any, Seat | None, str | None]:
+        """解析连接的目标比赛与座位。
+
+        返回 ``(match, seat, 错误信息)``，每项均可为 None。
+
+        - 显式 match（裁判/导播 ``?match=``）：按 id 取 + 成员校验 + 非 ENDED，
+          座位由 _resolve_seat 定。
+        - 选手路径（显式 PLAYER 席位，或无 seat 但账号含 PLAYER 角色）：
+          解析为其唯一 RUNNING 场（即"当前活跃比赛"），无则报错等待
+          ——保证选手同时只在一场。
+        - 官方路径（裁判/导播，无显式 match）：兜底取最新非 ENDED 成员场。
+        """
+        account_id = account.id
+        # 1) 显式比赛
+        if requested_match:
+            match = self.db.matches.get(requested_match)
+            if match is None:
+                return None, None, self.tr_default("error.match_missing")
+            if not self._is_member(match, account_id):
+                return None, None, self.tr_default("error.not_in_match")
+            if match.status == MatchStatus.ENDED:
+                return None, None, self.tr_default("error.match_ended")
+            seat = self._resolve_seat(match, account_id, requested_seat)
+            if seat is None:
+                return None, None, self.tr_default("error.seat_not_assigned")
+            return match, seat, None
+
+        explicit_player = requested_seat in (Seat.PLAYER_A.name, Seat.PLAYER_B.name)
+        is_player_seating = explicit_player or (
+            requested_seat is None and AccountType.PLAYER in account.roles
+        )
+        # 2) 选手路径：必须有 RUNNING 场
+        if is_player_seating:
+            running = self.db.matches.find_running_for_player(account_id)
+            if running:
+                match = max(running, key=lambda s: s.created_at)
+                seat = (
+                    Seat.PLAYER_A if match.player_a_id == account_id else Seat.PLAYER_B
+                )
+                if requested_seat and Seat[requested_seat] != seat:
+                    return None, None, self.tr_default(
+                        "error.seat_mismatch", seat=requested_seat
+                    )
+                return match, seat, None
+            return None, None, self.tr_default("error.no_running_match_wait")
+
+        # 3) 官方路径兜底（裁判/导播未指定 match）
+        matches = self.db.matches.find_by_member(account_id)
+        active = [s for s in matches if s.status != MatchStatus.ENDED]
+        if not active:
+            return None, None, None
+        match = max(active, key=lambda s: s.created_at)
+        seat = self._resolve_seat(match, account_id, requested_seat)
+        if seat is None:
+            return None, None, self.tr_default("error.not_in_match")
+        return match, seat, None
+
+    @staticmethod
+    def _is_member(match: Any, account_id: str) -> bool:
+        return account_id in {
+            match.player_a_id,
+            match.player_b_id,
+            match.referee_id,
+            match.director_id,
+        }
+
+    def _display_name_of(self, account_id: str | None) -> str | None:
+        """account_id → display_name（查不到返回 None）。"""
+        if not account_id:
+            return None
+        acc = self.db.accounts.get(account_id)
+        return acc.display_name if acc else None
+
+    @staticmethod
+    def _resolve_seat(
+        match, account_id: str, requested_seat: str | None = None
+    ) -> Seat | None:  # type: ignore[no-untyped-def]
+        seat_to_owner = {
+            Seat.PLAYER_A: match.player_a_id,
+            Seat.PLAYER_B: match.player_b_id,
+            Seat.REFEREE: match.referee_id,
+            Seat.DIRECTOR: match.director_id,
+        }
+        if requested_seat is not None:
+            try:
+                seat = Seat[requested_seat]
+            except KeyError:
+                return None
+            return seat if seat_to_owner[seat] == account_id else None
+        for seat, owner_id in seat_to_owner.items():
+            if owner_id == account_id:
+                return seat
+        return None
+
+    async def _send(self, conn: Connection, msg: ServerMessage) -> None:
+        await self._send_model(conn.websocket, msg)
+
+    async def _send_model(self, websocket: WebSocket, msg: ServerMessage) -> None:
+        await websocket.send_text(msg.model_dump_json())
+
+    async def _safe_close(self, websocket: WebSocket) -> None:
+        try:
+            await websocket.close()
+        except Exception:
+            self.logger.debug("关闭旧连接失败，忽略。", exc_info=True)

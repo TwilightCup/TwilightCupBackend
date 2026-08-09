@@ -1,0 +1,210 @@
+# 由 gitignore.io 模板（python, pycharm+all, visualstudiocode, macos, windows, linux）
+# 与项目原有规则合并而成；模板源: https://github.com/github/gitignore
+
+### Python
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.cache
+nosetests.xml
+*.cover
+*.py.cover
+*.lcov
+cover/
+hypothesis/
+.hypothesis/
+
+# Translations（本项目 locales/ 为 .txt，不受影响）
+*.mo
+*.pot
+
+# Django / Flask / Scrapy
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter / IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# PEP 582
+__pypackages__/
+
+# Celery / Redis / RabbitMQ
+celerybeat-schedule*
+celerybeat.pid
+*.rdb
+*.aof
+*.pid
+mnesia/
+rabbitmq/
+rabbitmq-data/
+
+# SageMath
+*.sage.py
+
+# Cython debug symbols
+cython_debug/
+
+# 虚拟环境
+.envrc
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# uv
+# uv.lock 应提交以保证可复现构建
+
+# 测试 / 类型检查 / 覆盖率
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.pyright/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+
+# PyPI 配置（含凭据）
+.pypirc
+
+# 日志
+logs/
+*.log
+nohup.out
+
+# 环境变量（含密钥，勿提交）
+.env
+
+### PyCharm / JetBrains
+# 本项目整体忽略 .idea/ 目录
+.idea/
+# 其他 JetBrains 生成文件
+*.iws
+out/
+.idea_modules/
+atlassian-ide-plugin.xml
+http-client.private.env.json
+cmake-build-*/
+
+### Visual Studio Code
+# 本项目整体忽略 .vscode/ 目录
+.vscode/
+*.code-workspace
+*.vsix
+tempCodeRunnerFile.py
+
+### macOS
+.DS_Store
+.localized
+__MACOSX/
+.AppleDouble
+.LSOverride
+Icon[]
+
+# Resource forks
+._*
+
+# 卷根目录可能出现的文件/目录
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.com.apple.timemachine.supported
+.PKInstallSandboxManager
+.PKInstallSandboxManager-SystemSoftware
+.hotfiles.btree
+.vol
+.file
+.disk_label*
+lost+found
+.HFS+ Private Directory Data[]
+
+# AFP 远程共享目录
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+### Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.stackdump
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+### Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+### Docker
+docker-compose.yml

@@ -1,0 +1,78 @@
+# 中文系统消息。格式：key = value（# 或 // 为注释，空行跳过）。
+# 键清单与 en.txt 一致；添加新消息时两个文件需同步维护。
+
+# --- 聊天命令 ---
+command.empty = 空命令
+command.unknown = 未知命令：!{name}
+ready.only_players = 仅选手可使用 !ready
+ready.on = {player} 已就绪
+ready.off = {player} 取消就绪
+roll.result = {player} 掷出 {value}（1-100）
+timer.only_referee = 仅裁判可使用 !timer
+timer.invalid = !timer 需要正整数或 reset
+timer.positive = !timer 秒数必须为正
+timer.remaining = 剩余时间 {m}:{s:02d}
+timer.ended = 计时结束
+timer.started = 裁判发起了 {seconds} 秒计时
+timer.reset_done = 计时器已重置
+timer.no_active = 没有进行中的计时器
+lang.only_referee = 仅裁判可切换语言
+lang.available = 可用语言：{list}
+lang.unknown = 未知语言：{id}（可用：{list}）
+lang.changed = 语言已切换为：{id}
+
+# --- 错误/连接（握手期按默认语言渲染）---
+error.auth_failed = 鉴权失败
+error.token_invalid_or_expired = 令牌无效或已过期
+error.token_invalid = 令牌无效
+error.account_missing = 账号不存在
+error.no_active_match = 未找到该账号参与的进行中比赛
+error.no_running_match_wait = 暂无进行中的比赛，请等待裁判开始
+error.not_in_match = 该账号未参与此比赛
+error.match_missing = 比赛不存在
+error.match_ended = 该比赛已结束
+error.seat_not_assigned = 该账号未被指派为此比赛的席位
+error.seat_mismatch = 该账号未被指派为此比赛的 {seat}
+error.match_paused = 比赛已暂停，无法操作
+error.bad_message = 消息格式错误
+error.director_readonly = 导播只读，不能发送消息
+error.wrong_seat = 仅 {seat} 可执行此操作
+error.players_only = 仅选手可执行此操作
+error.unimplemented = 暂未实现的消息类型：{type}
+
+# --- 暂停/恢复 ---
+pause.message = 比赛已暂停
+resume.message = 比赛已恢复
+
+# --- 比赛状态机 ---
+prep.phase_error = 当前阶段（{phase}）无法进入准备
+prep.score_decided = 比分已达取胜分数，请结束比赛
+prep.started = 准备阶段开始，选手就绪后输入 !ready
+start.only_prep = 仅准备阶段可手动开始
+start.no_pick = 开始前请先选定选图
+countdown.intro_auto = 双方已就绪，{delay} 秒后自动开始…
+countdown.intro_manual = 裁判已开始，{delay} 秒后开始比赛…
+countdown.cancelled = 自动开始倒计时已取消
+pick.not_in_mappool = 选图不在图池中：{code}
+pick.selected = 裁判选图：{code} - {name}{tags}{retry}
+pick.tags_category = 类别 {category} 的选图不能携带词条：{code}
+pick.tags_too_many = 词条过多（上限 {limit}）：{tags}
+pick.tags_invalid = 词条无效：{tags}
+pick.tags_conflict = 词条冲突：Checkpoint 与 No Checkpoint
+pick.retry_required = 单关 {code}（{category}）必须指定重试次数
+pick.retry_min = 重试次数必须 ≥ 1：{value}
+pick.retry_not_allowed = 选图 {code}（类别 {category}）使用图池重试次数，不可覆盖
+round.invalid_pick = 选图无效，无法开始回合
+round.started = 回合开始！当前选图：{code} - {name}
+forfeit.done = {player} 弃权（{reason}）
+judging.await = 双方已完成，等待裁判判定
+round.not_found = 回合不存在
+round.not_current = 非当前回合，无法终止
+round.terminated = 裁判终止了回合：{reason}
+verdict.not_now = 当前无法判定
+verdict.not_verdicted = 该回合尚未判定
+match.already_ended = 比赛已结束
+match.no_winner = 尚未决出胜方，无法结束比赛
+match.ended = 比赛结束，胜方 {winner}
+match.admin_ended = 管理员结束了比赛
+rematch.announce = 回合平局，进入重赛 — 请再次 !ready

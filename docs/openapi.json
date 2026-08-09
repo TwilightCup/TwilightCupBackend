@@ -1,0 +1,5240 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TwilightCup Backend",
+    "description": "黄昏杯（Twilight Cup）《人类一败涂地》1v1 速通比赛中转服务端。REST 接口用于账号/比赛管理与日志查询；选手·裁判·导播三端的实时通信走 WebSocket（协议见 docs/ws-protocol.md）。",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "健康检查",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "登录签发令牌",
+        "description": "用用户名+口令换取 JWT 令牌，REST 与 WebSocket 均以该令牌鉴权。",
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "用户名或密码错误"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "查看当前账号",
+        "description": "依据 Bearer 令牌返回当前账号信息（access_token 不回显）。",
+        "operationId": "me_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "令牌无效或缺失"
+          }
+        }
+      }
+    },
+    "/admin/accounts": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "账号列表",
+        "description": "返回全部账号（不含口令哈希）。",
+        "operationId": "list_admin_accounts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccountOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Admin Accounts Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "创建账号",
+        "description": "管理员预创建选手/裁判/导播/管理员账号并分发。",
+        "operationId": "create_admin_accounts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "409": {
+            "description": "用户名已存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/accounts/{account_id}": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "查询单个账号",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_one_admin_accounts__account_id__get",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Account Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "账号不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "删除账号",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "remove_admin_accounts__account_id__delete",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Account Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "账号不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "修改账号",
+        "description": "按字段局部更新（display_name / password / type，传哪个改哪个）。",
+        "operationId": "update_admin_accounts__account_id__patch",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Account Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "账号不存在"
+          },
+          "409": {
+            "description": "用户名冲突"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/matches": {
+      "get": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "比赛列表",
+        "description": "返回全部比赛。",
+        "operationId": "list_admin_matches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MatchOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Admin Matches Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "创建比赛",
+        "description": "管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。",
+        "operationId": "create_admin_matches_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatchCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "400": {
+            "description": "角色账号不存在/类型不符/双方选手相同/分数非法"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/matches/{match_id}/end": {
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "强制结束比赛（管理员）",
+        "description": "把进行中（RUNNING/CREATED）的比赛标记为 ENDED，断开双方选手并广播结束。用于裁判弃赛/异常导致卡住时释放选手（否则该选手的下一场 begin_prep 被单场规则挡）。",
+        "operationId": "force_end_admin_matches__match_id__end_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "400": {
+            "description": "比赛已结束"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/matches/{match_id}": {
+      "get": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "查询比赛详情",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_one_admin_matches__match_id__get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "局部更新会话（选手/状态/名称）",
+        "description": "便于「把选手分到已存在的会话」或管理员手动改状态（§7.1）。选手以用户名指定（校验 PLAYER 角色）；改选手或切到 RUNNING 时同样跑跨会话占用冲突校验（§5）。status 切换须合法（→RUNNING 须 CREATED/PAUSED；→PAUSED 须 RUNNING；→ENDED 须 RUNNING/PAUSED），否则 409。",
+        "operationId": "update_admin_matches__match_id__patch",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatchUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "会话/账号不存在"
+          },
+          "400": {
+            "description": "账号角色不符"
+          },
+          "409": {
+            "description": "状态切换非法 / 选手在另一场进行中的比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/mappools": {
+      "get": {
+        "tags": [
+          "mappools"
+        ],
+        "summary": "图池列表",
+        "description": "返回全部图池库（按创建时间倒序）。",
+        "operationId": "list_admin_mappools_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MappoolOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Admin Mappools Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "mappools"
+        ],
+        "summary": "创建图池",
+        "description": "管理员创建一个可复用图池（入库），创建比赛时按 id 引用。",
+        "operationId": "create_admin_mappools_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappoolCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappoolOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "409": {
+            "description": "图池名已存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/mappools/{mappool_id}": {
+      "get": {
+        "tags": [
+          "mappools"
+        ],
+        "summary": "查询单个图池",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_one_admin_mappools__mappool_id__get",
+        "parameters": [
+          {
+            "name": "mappool_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mappool Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappoolOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "图池不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "mappools"
+        ],
+        "summary": "删除图池",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "remove_admin_mappools__mappool_id__delete",
+        "parameters": [
+          {
+            "name": "mappool_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mappool Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "图池不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "mappools"
+        ],
+        "summary": "修改图池",
+        "description": "按字段局部更新（name / mappool，传哪个改哪个）。",
+        "operationId": "update_admin_mappools__mappool_id__patch",
+        "parameters": [
+          {
+            "name": "mappool_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mappool Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappoolUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappoolOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "图池不存在"
+          },
+          "409": {
+            "description": "图池名冲突"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/levels": {
+      "get": {
+        "tags": [
+          "levels"
+        ],
+        "summary": "关卡列表",
+        "description": "返回全部关卡（按创建时间倒序）。",
+        "operationId": "list_admin_levels_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LevelOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Admin Levels Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "levels"
+        ],
+        "summary": "创建关卡",
+        "description": "管理员创建关卡（关卡库）；图池选图的 collection.raw 按 id 引用。",
+        "operationId": "create_admin_levels_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LevelCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "409": {
+            "description": "关卡名已存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/levels/{level_id}": {
+      "get": {
+        "tags": [
+          "levels"
+        ],
+        "summary": "查询单个关卡",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_one_admin_levels__level_id__get",
+        "parameters": [
+          {
+            "name": "level_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Level Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "关卡不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "levels"
+        ],
+        "summary": "删除关卡",
+        "description": "删除关卡库条目（不改动已引用它的图池/比赛数据；引用处下发时名字原样保留）。",
+        "operationId": "remove_admin_levels__level_id__delete",
+        "parameters": [
+          {
+            "name": "level_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Level Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "关卡不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "levels"
+        ],
+        "summary": "修改关卡",
+        "description": "按字段局部更新（display_name / logo）；name 不可改。",
+        "operationId": "update_admin_levels__level_id__patch",
+        "parameters": [
+          {
+            "name": "level_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Level Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LevelUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "关卡不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/directors": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "加入导播组",
+        "description": "按用户名批量追加导播到导播组（候选池，校验 DIRECTOR 角色）。仅 DRAFT 状态可用。",
+        "operationId": "add_directors_admin_tournaments__tournament_id__directors_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsernamesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/participants": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "加入参赛选手",
+        "description": "按用户名批量追加选手到参赛池（校验 PLAYER 角色）；已存在则跳过。仅 DRAFT 状态可用。",
+        "operationId": "add_participants_admin_tournaments__tournament_id__participants_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsernamesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/referees": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "加入裁判组",
+        "description": "按用户名批量追加裁判到裁判组（候选池，校验 REFEREE 角色）。仅 DRAFT 状态可用。",
+        "operationId": "add_referees_admin_tournaments__tournament_id__referees_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsernamesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/fixtures/{fixture_id}/assign": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "为对阵指派裁判/导播",
+        "description": "从赛事裁判组/导播组里为该对阵指派裁判与（可选）导播（按用户名）。",
+        "operationId": "assign_officials_admin_tournaments__tournament_id__fixtures__fixture_id__assign_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          },
+          {
+            "name": "fixture_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Fixture Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixtureAssignBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FixtureOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事/对阵不存在"
+          },
+          "400": {
+            "description": "账号不存在 / 角色不符 / 不在赛事组内"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments": {
+      "get": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "赛事列表",
+        "description": "返回全部赛事（按创建时间倒序）。",
+        "operationId": "list_all_admin_tournaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TournamentOut"
+                  },
+                  "type": "array",
+                  "title": "Response List All Admin Tournaments Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "创建赛事",
+        "description": "创建赛事（编排容器：赛制 + 参赛池 + 裁判组 + 导播组 + 瑞士轮积分）。单场规则（BO/图池等）在生成每场比赛时指定，赛事不持有。",
+        "operationId": "create_admin_tournaments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TournamentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/fixtures/{fixture_id}/create-match": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "为对阵生成实战比赛",
+        "description": "把对阵节点实例化为 Match（须已指派裁判、双方选手已定）。生成比赛带 tournament_id/fixture_id，单场打完自动推进对阵。",
+        "operationId": "create_match_for_fixture_admin_tournaments__tournament_id__fixtures__fixture_id__create_match_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          },
+          {
+            "name": "fixture_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Fixture Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixtureCreateMatchBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事/对阵不存在"
+          },
+          "400": {
+            "description": "未指派裁判 / 双方未定 / 已生成过比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/generate-bracket": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "生成对阵表",
+        "description": "按赛制生成对阵表（M12 仅单败淘汰；双败/瑞士轮在 M13）。要求 DRAFT 状态、至少 2 名选手；生成后赛事进入 IN_PROGRESS。",
+        "operationId": "generate_bracket_admin_tournaments__tournament_id__generate_bracket_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BracketView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "状态不符 / 选手不足 / 该赛制暂未实现"
+          },
+          "503": {
+            "description": "赛程引擎未就绪"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/bracket": {
+      "get": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "查看对阵表",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_bracket_admin_tournaments__tournament_id__bracket_get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BracketView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/fixtures/{fixture_id}": {
+      "get": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "查询单个对阵",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_fixture_admin_tournaments__tournament_id__fixtures__fixture_id__get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          },
+          {
+            "name": "fixture_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Fixture Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FixtureOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事/对阵不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}": {
+      "get": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "查询赛事详情",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "get_one_admin_tournaments__tournament_id__get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "删除赛事",
+        "description": "仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）。",
+        "operationId": "remove_admin_tournaments__tournament_id__delete",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "修改赛事核心字段",
+        "description": "按字段局部更新（仅 DRAFT 状态）。不允许改 format；改 mappool_id 会同步刷新图池快照。",
+        "operationId": "update_admin_tournaments__tournament_id__patch",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TournamentUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事/图池不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 分数非法"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/standings": {
+      "get": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "查看排名",
+        "description": "返回当前排名（单败：冠军 rank 1，其余按被淘汰轮次）。display_name 由控制器注入。",
+        "operationId": "get_standings_admin_tournaments__tournament_id__standings_get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TournamentStandingOut"
+                  },
+                  "title": "Response Get Standings Admin Tournaments  Tournament Id  Standings Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/participants/remove": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "移除参赛选手",
+        "description": "按用户名批量从参赛池移除（同步清理种子序）。仅 DRAFT 状态可用。",
+        "operationId": "remove_participants_admin_tournaments__tournament_id__participants_remove_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsernamesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/seeds": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "设置种子序",
+        "description": "设置参赛选手的种子排位（生成赛程时决定对阵播位）。长度须等于参赛选手数、且每个 id 都在池中、无重复。仅 DRAFT 状态可用。",
+        "operationId": "set_seeds_admin_tournaments__tournament_id__seeds_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedOrderBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非 DRAFT 状态 / 长度不符 / 含非池内 id / 存在重复"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tournaments/{tournament_id}/next-round": {
+      "post": {
+        "tags": [
+          "tournaments"
+        ],
+        "summary": "生成下一轮（瑞士轮专用）",
+        "description": "瑞士轮按当前积分荷兰式配对生成下一轮（避免重赛）；淘汰赛返回 400。要求上一轮已全部完成。",
+        "operationId": "start_next_round_admin_tournaments__tournament_id__next_round_post",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BracketView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "400": {
+            "description": "非瑞士轮 / 上一轮未完成 / 超过总轮数"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/password": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "修改我的口令",
+        "description": "当前登录账号修改自己的口令；须校验旧口令，防止借用登录态误改。",
+        "operationId": "change_password_me_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "400": {
+            "description": "旧口令错误 / 新口令非法"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/matches/{match_id}": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "查询比赛详情（含图池）",
+        "description": "返回当前账号参与的某个比赛的完整信息（含结构化图池，供裁判端 ban/pick 载入）。仅比赛成员可访问。",
+        "operationId": "match_detail_me_matches__match_id__get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该比赛成员"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/matches": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "我参与的比赛",
+        "description": "返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。",
+        "operationId": "matches_me_matches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MatchSummary"
+                  },
+                  "type": "array",
+                  "title": "Response Matches Me Matches Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/matches/{match_id}/pause": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "暂停比赛（保留进度，释放选手）",
+        "description": "裁判把进行中的比赛 RUNNING→PAUSED：保留回合/比分/草稿数据，释放两名选手占用（可立刻去打另一场）；仅该场裁判或管理员可调用；暂停后该场所有比赛类 WS 动作被拒绝，直到 resume。",
+        "operationId": "pause_match_me_matches__match_id__pause_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该场裁判/管理员"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "409": {
+            "description": "当前非 RUNNING（无法暂停）"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/matches/{match_id}/resume": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "恢复比赛（PAUSED → RUNNING）",
+        "description": "裁判把暂停中的比赛恢复为 RUNNING，原样续上历史回合数据。恢复前校验双方选手不在另一场 RUNNING 比赛中（冲突 409）。",
+        "operationId": "resume_match_me_matches__match_id__resume_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该场裁判/管理员"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "409": {
+            "description": "当前非 PAUSED / 选手在另一场进行中的比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/matches/{match_id}/start": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "开始比赛（裁判激活）",
+        "description": "裁判把比赛从 CREATED 激活为 RUNNING（写 started_at），随后选手可连入房间摇点。仅该场比赛的裁判（或管理员）可调用；已 RUNNING 幂等返回；PAUSED 须走 resume；激活时校验双方选手不在另一场 RUNNING 比赛中（冲突 409）。",
+        "operationId": "start_match_me_matches__match_id__start_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该场裁判/管理员"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "409": {
+            "description": "状态非法 / 选手正在另一场进行中的比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/tournaments/{tournament_id}/bracket": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "查看赛事对阵树（赛事成员）",
+        "description": "选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。门控：须为该赛事参赛/裁判/导播/管理员。",
+        "operationId": "tournament_bracket_me_tournaments__tournament_id__bracket_get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BracketView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该赛事成员"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/tournaments/{tournament_id}/mappool": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "查看赛事图池（赛事成员）",
+        "description": "赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池（含 logo_url）；优先取第一场已生成比赛的图池。",
+        "operationId": "tournament_mappool_me_tournaments__tournament_id__mappool_get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappoolOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该赛事成员"
+          },
+          "404": {
+            "description": "赛事不存在 / 尚无已生成比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/tournaments": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "我参与的赛事",
+        "description": "返回当前账号作为选手/裁判/导播参与的赛事；进行中优先，创建时间倒序。",
+        "operationId": "tournaments_me_tournaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TournamentOut"
+                  },
+                  "type": "array",
+                  "title": "Response Tournaments Me Tournaments Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me": {
+      "patch": {
+        "tags": [
+          "me"
+        ],
+        "summary": "修改我的展示名",
+        "description": "当前登录账号修改自己的展示名（非敏感，无需旧密码校验）。",
+        "operationId": "update_display_name_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisplayNameUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "400": {
+            "description": "展示名为空"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs/matches/{match_id}/chat": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "聊天日志",
+        "description": "该比赛累计的全部聊天与系统消息（跨回合不清空）。",
+        "operationId": "chat_logs_matches__match_id__chat_get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessage"
+                  },
+                  "title": "Response Chat Logs Matches  Match Id  Chat Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员/裁判/导播权限"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs/matches/{match_id}/match_log": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "比赛日志",
+        "description": "整场比赛的实时日志视图：初始信息(赛制/图池/选手/延迟)、全部回合 id（含不计分的重赛原回合）、最终结果。",
+        "operationId": "match_log_logs_matches__match_id__match_log_get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchLog"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员/裁判/导播权限"
+          },
+          "404": {
+            "description": "比赛日志不存在（尚无回合开始）"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logs/matches/{match_id}/rounds/{round_no}": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "回合明细",
+        "description": "指定回合的完整数据：选图快照、双方每次尝试/每关用时、最终成绩、胜负判定。",
+        "operationId": "round_detail_logs_matches__match_id__rounds__round_no__get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          },
+          {
+            "name": "round_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Round No"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员/裁判/导播权限"
+          },
+          "404": {
+            "description": "回合不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/uploads/sign": {
+      "get": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "签发预签名 URL",
+        "description": "按 object key 签发短时效 GET URL（前端 logo URL 过期后刷新用）。",
+        "operationId": "sign_admin_uploads_sign_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/uploads": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "上传静态资源（如 logo）",
+        "description": "multipart 上传图片（png/jpg/webp/gif，≤5MB）到 MinIO，返回 object key（用于 Pick.logo）+ 短时效预签名 URL。",
+        "operationId": "upload_admin_uploads_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_admin_uploads_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "400": {
+            "description": "类型不支持 / 超过 5MB / 上传失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountCreate": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "description": "登录用户名（唯一）"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "口令明文"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "展示名，如“选手A”"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/AccountType"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "角色集合（可多选）：1=选手 2=裁判 3=导播 4=管理员"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password",
+          "display_name",
+          "roles"
+        ],
+        "title": "AccountCreate"
+      },
+      "AccountOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/AccountType"
+            },
+            "type": "array",
+            "title": "Roles"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "roles",
+          "display_name",
+          "created_at"
+        ],
+        "title": "AccountOut"
+      },
+      "AccountType": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "title": "AccountType",
+        "description": "账号类型。"
+      },
+      "AccountUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "roles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AccountType"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roles"
+          }
+        },
+        "type": "object",
+        "title": "AccountUpdate"
+      },
+      "Attempt": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AttemptStatus",
+            "default": 3
+          },
+          "time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index"
+        ],
+        "title": "Attempt",
+        "description": "单关项目的一次尝试。"
+      },
+      "AttemptStatus": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3
+        ],
+        "title": "AttemptStatus",
+        "description": "单关项目单次尝试状态。"
+      },
+      "Body_upload_admin_uploads_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_admin_uploads_post"
+      },
+      "BracketRound": {
+        "properties": {
+          "round_no": {
+            "type": "integer",
+            "title": "Round No"
+          },
+          "bracket_side": {
+            "$ref": "#/components/schemas/BracketSide"
+          },
+          "fixtures": {
+            "items": {
+              "$ref": "#/components/schemas/FixtureOut"
+            },
+            "type": "array",
+            "title": "Fixtures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "round_no",
+          "bracket_side",
+          "fixtures"
+        ],
+        "title": "BracketRound"
+      },
+      "BracketSide": {
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2
+        ],
+        "title": "BracketSide",
+        "description": "对阵所在半区（双败淘汰用；单败/瑞士统一为 MAIN）。"
+      },
+      "BracketView": {
+        "properties": {
+          "tournament_id": {
+            "type": "string",
+            "title": "Tournament Id"
+          },
+          "format": {
+            "$ref": "#/components/schemas/TournamentFormat"
+          },
+          "current_round": {
+            "type": "integer",
+            "title": "Current Round"
+          },
+          "total_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rounds"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/BracketRound"
+            },
+            "type": "array",
+            "title": "Rounds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tournament_id",
+          "format",
+          "current_round",
+          "total_rounds",
+          "rounds"
+        ],
+        "title": "BracketView"
+      },
+      "Category": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "picks": {
+            "items": {
+              "$ref": "#/components/schemas/Pick"
+            },
+            "type": "array",
+            "title": "Picks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "Category",
+        "description": "图池类别（仅展示分组，无程序逻辑）。"
+      },
+      "ChatMessage": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "match_id": {
+            "type": "string",
+            "title": "Match Id"
+          },
+          "sender_role": {
+            "$ref": "#/components/schemas/ChatSenderRole"
+          },
+          "sender_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender Id"
+          },
+          "sender_name": {
+            "type": "string",
+            "title": "Sender Name"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "is_system": {
+            "type": "boolean",
+            "title": "Is System",
+            "default": false
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Ts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "match_id",
+          "sender_role",
+          "sender_id",
+          "sender_name",
+          "text"
+        ],
+        "title": "ChatMessage",
+        "description": "一条聊天消息（用户消息或系统消息）。"
+      },
+      "ChatSenderRole": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3
+        ],
+        "title": "ChatSenderRole",
+        "description": "聊天发送者角色。"
+      },
+      "CollectionConfig": {
+        "properties": {
+          "raw": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Raw"
+          }
+        },
+        "type": "object",
+        "required": [
+          "raw"
+        ],
+        "title": "CollectionConfig",
+        "description": "关卡合集配置（插件定义格式，服务端原样存储，下发前把关卡 id 展开为名字）。"
+      },
+      "DisplayNameUpdate": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "新的展示名"
+          }
+        },
+        "type": "object",
+        "required": [
+          "display_name"
+        ],
+        "title": "DisplayNameUpdate"
+      },
+      "FixtureAssignBody": {
+        "properties": {
+          "referee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referee",
+            "description": "裁判用户名"
+          },
+          "director": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Director",
+            "description": "导播用户名"
+          }
+        },
+        "type": "object",
+        "title": "FixtureAssignBody",
+        "description": "为对阵指派裁判 / 导播（用户名；须在赛事裁判组 / 导播组内）。"
+      },
+      "FixtureCreateMatchBody": {
+        "properties": {
+          "bo_format": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Bo Format",
+            "description": "本场 BO 数，如 9 表示 BO9"
+          },
+          "win_threshold": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Threshold",
+            "description": "取胜所需分数；省略按 (bo//2)+1"
+          },
+          "scoring_method": {
+            "$ref": "#/components/schemas/ScoringMethod",
+            "description": "单关成绩计算方式：1=最快 2=平均"
+          },
+          "start_countdown_delay": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Start Countdown Delay",
+            "description": "回合开始前倒数秒数",
+            "default": 5
+          },
+          "ban_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ban Count",
+            "description": "每方 ban 数",
+            "default": 1
+          },
+          "protect_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Protect Count",
+            "description": "每方 protect 数（0=无）",
+            "default": 1
+          },
+          "ct_tag_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Ct Tag Count",
+            "description": "CT 词条数上限（0=禁用词条）",
+            "default": 2
+          },
+          "mappool_id": {
+            "type": "string",
+            "title": "Mappool Id",
+            "description": "引用图池库 id（冻结为快照内嵌本场）"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bo_format",
+          "scoring_method",
+          "mappool_id"
+        ],
+        "title": "FixtureCreateMatchBody",
+        "description": "为对阵生成比赛时传入的单场规则 + 图池（赛事不持有这些）。"
+      },
+      "FixtureOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tournament_id": {
+            "type": "string",
+            "title": "Tournament Id"
+          },
+          "round_no": {
+            "type": "integer",
+            "title": "Round No"
+          },
+          "bracket_side": {
+            "$ref": "#/components/schemas/BracketSide"
+          },
+          "match_index": {
+            "type": "integer",
+            "title": "Match Index"
+          },
+          "player_a_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player A Id"
+          },
+          "player_b_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player B Id"
+          },
+          "player_a_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player A Name"
+          },
+          "player_b_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player B Name"
+          },
+          "is_bye": {
+            "type": "boolean",
+            "title": "Is Bye"
+          },
+          "advances_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advances To"
+          },
+          "advances_slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advances Slot"
+          },
+          "losers_drops_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Losers Drops To"
+          },
+          "losers_drop_slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Losers Drop Slot"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "referee_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referee Id"
+          },
+          "director_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Director Id"
+          },
+          "match_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Id"
+          },
+          "winner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winner Id"
+          },
+          "score_a": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score A"
+          },
+          "score_b": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score B"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FixtureStatus"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tournament_id",
+          "round_no",
+          "bracket_side",
+          "match_index",
+          "player_a_id",
+          "player_b_id",
+          "is_bye",
+          "advances_to",
+          "advances_slot",
+          "losers_drops_to",
+          "losers_drop_slot",
+          "depends_on",
+          "referee_id",
+          "director_id",
+          "match_id",
+          "winner_id",
+          "status",
+          "created_at",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "FixtureOut"
+      },
+      "FixtureStatus": {
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "title": "FixtureStatus",
+        "description": "对阵节点状态。"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LevelCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "关卡标识（唯一，如 Intro）"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "展示名；空则同 name",
+            "default": ""
+          },
+          "logo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo",
+            "description": "展示图 minio object key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "LevelCreate"
+      },
+      "LevelOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "logo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "display_name",
+          "logo",
+          "logo_url",
+          "created_at"
+        ],
+        "title": "LevelOut"
+      },
+      "LevelTime": {
+        "properties": {
+          "level_index": {
+            "type": "integer",
+            "title": "Level Index"
+          },
+          "time_ms": {
+            "type": "integer",
+            "title": "Time Ms"
+          },
+          "total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level_index",
+          "time_ms"
+        ],
+        "title": "LevelTime",
+        "description": "单关用时上报记录。"
+      },
+      "LevelUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "logo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo"
+          }
+        },
+        "type": "object",
+        "title": "LevelUpdate"
+      },
+      "LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "description": "登录用户名"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "口令明文（服务端仅存哈希）"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "Mappool": {
+        "properties": {
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/Category"
+            },
+            "type": "array",
+            "title": "Categories"
+          }
+        },
+        "type": "object",
+        "title": "Mappool",
+        "description": "图池：一场比赛所有可选项目的集合。"
+      },
+      "MappoolCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "图池库名，如「决赛图池 v1」"
+          },
+          "mappool": {
+            "$ref": "#/components/schemas/Mappool",
+            "description": "完整图池：类别→选图"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "mappool"
+        ],
+        "title": "MappoolCreate"
+      },
+      "MappoolOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "mappool": {
+            "$ref": "#/components/schemas/Mappool"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "mappool",
+          "created_by",
+          "created_at"
+        ],
+        "title": "MappoolOut"
+      },
+      "MappoolUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "mappool": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Mappool"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "MappoolUpdate"
+      },
+      "MatchCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "比赛名称"
+          },
+          "bo_format": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Bo Format",
+            "description": "赛制 BO 数，如 9 表示 BO9"
+          },
+          "win_threshold": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Threshold",
+            "description": "取胜所需分数；省略时按 (bo//2)+1 推导（BO9→5）"
+          },
+          "scoring_method": {
+            "$ref": "#/components/schemas/ScoringMethod",
+            "description": "单关项目成绩计算方式：1=最快 2=平均（仅对单关项目生效）"
+          },
+          "start_countdown_delay": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Start Countdown Delay",
+            "description": "回合开始前的倒数秒数，默认 5",
+            "default": 5
+          },
+          "ban_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ban Count",
+            "description": "每方选图 ban 数，默认 1",
+            "default": 1
+          },
+          "protect_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Protect Count",
+            "description": "每方选图 protect 数（0=无 protect，如深度赛），默认 1",
+            "default": 1
+          },
+          "ct_tag_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Ct Tag Count",
+            "description": "CT 词条数上限（0=本场禁用词条），默认 2",
+            "default": 2
+          },
+          "mappool": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Mappool"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "内联完整图池（与 mappool_id 二选一）"
+          },
+          "mappool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mappool Id",
+            "description": "引用图池库中的图池 id（优先于内联 mappool）"
+          },
+          "player_a": {
+            "type": "string",
+            "title": "Player A",
+            "description": "选手 A 用户名"
+          },
+          "player_b": {
+            "type": "string",
+            "title": "Player B",
+            "description": "选手 B 用户名"
+          },
+          "referee": {
+            "type": "string",
+            "title": "Referee",
+            "description": "裁判用户名"
+          },
+          "director": {
+            "type": "string",
+            "title": "Director",
+            "description": "导播用户名"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "bo_format",
+          "scoring_method",
+          "player_a",
+          "player_b",
+          "referee",
+          "director"
+        ],
+        "title": "MatchCreate"
+      },
+      "MatchLog": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "match_id": {
+            "type": "string",
+            "title": "Match Id"
+          },
+          "initial_info": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Initial Info"
+          },
+          "round_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Round Ids"
+          },
+          "final_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Result"
+          },
+          "draft_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Snapshot"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "match_id",
+          "initial_info"
+        ],
+        "title": "MatchLog",
+        "description": "整场比赛日志视图文档（实时更新）。"
+      },
+      "MatchOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "bo_format": {
+            "type": "integer",
+            "title": "Bo Format"
+          },
+          "win_threshold": {
+            "type": "integer",
+            "title": "Win Threshold"
+          },
+          "scoring_method": {
+            "$ref": "#/components/schemas/ScoringMethod"
+          },
+          "start_countdown_delay": {
+            "type": "integer",
+            "title": "Start Countdown Delay"
+          },
+          "ban_count": {
+            "type": "integer",
+            "title": "Ban Count"
+          },
+          "protect_count": {
+            "type": "integer",
+            "title": "Protect Count"
+          },
+          "ct_tag_count": {
+            "type": "integer",
+            "title": "Ct Tag Count"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MatchStatus"
+          },
+          "mappool": {
+            "$ref": "#/components/schemas/Mappool"
+          },
+          "player_a_id": {
+            "type": "string",
+            "title": "Player A Id"
+          },
+          "player_b_id": {
+            "type": "string",
+            "title": "Player B Id"
+          },
+          "player_a_username": {
+            "type": "string",
+            "title": "Player A Username",
+            "default": ""
+          },
+          "player_b_username": {
+            "type": "string",
+            "title": "Player B Username",
+            "default": ""
+          },
+          "referee_id": {
+            "type": "string",
+            "title": "Referee Id"
+          },
+          "director_id": {
+            "type": "string",
+            "title": "Director Id"
+          },
+          "winner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winner"
+          },
+          "tournament_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tournament Id"
+          },
+          "fixture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixture Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "bo_format",
+          "win_threshold",
+          "scoring_method",
+          "start_countdown_delay",
+          "ban_count",
+          "protect_count",
+          "ct_tag_count",
+          "status",
+          "mappool",
+          "player_a_id",
+          "player_b_id",
+          "referee_id",
+          "director_id",
+          "winner",
+          "tournament_id",
+          "fixture_id",
+          "created_at",
+          "started_at",
+          "ended_at"
+        ],
+        "title": "MatchOut"
+      },
+      "MatchStatus": {
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "title": "MatchStatus",
+        "description": "比赛比赛状态（持久化层）。"
+      },
+      "MatchSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "bo_format": {
+            "type": "integer",
+            "title": "Bo Format"
+          },
+          "win_threshold": {
+            "type": "integer",
+            "title": "Win Threshold"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MatchStatus"
+          },
+          "player_a_name": {
+            "type": "string",
+            "title": "Player A Name"
+          },
+          "player_b_name": {
+            "type": "string",
+            "title": "Player B Name"
+          },
+          "referee_name": {
+            "type": "string",
+            "title": "Referee Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "bo_format",
+          "win_threshold",
+          "status",
+          "player_a_name",
+          "player_b_name",
+          "referee_name",
+          "created_at",
+          "started_at",
+          "ended_at"
+        ],
+        "title": "MatchSummary",
+        "description": "比赛摘要（列表用，不含图池等重字段；展示名由控制器解析后注入）。"
+      },
+      "MatchUpdate": {
+        "properties": {
+          "player_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player A",
+            "description": "选手 A 用户名"
+          },
+          "player_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player B",
+            "description": "选手 B 用户名"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "目标状态枚举值"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "比赛名称"
+          }
+        },
+        "type": "object",
+        "title": "MatchUpdate",
+        "description": "局部更新已有会话（§7.1）：选手用户名 / 状态 / 名称。\n\n改选手或切到 RUNNING 时同样跑跨会话占用冲突校验（§5）。"
+      },
+      "PasswordChange": {
+        "properties": {
+          "old_password": {
+            "type": "string",
+            "title": "Old Password",
+            "description": "旧口令（明文，服务端校验）"
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password",
+            "description": "新口令（明文，至少 4 位）"
+          }
+        },
+        "type": "object",
+        "required": [
+          "old_password",
+          "new_password"
+        ],
+        "title": "PasswordChange"
+      },
+      "Pick": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PickType"
+          },
+          "retry_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Count"
+          },
+          "collection": {
+            "$ref": "#/components/schemas/CollectionConfig"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "logo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "type",
+          "collection"
+        ],
+        "title": "Pick",
+        "description": "选图（= 一个项目 / 一个回合）。"
+      },
+      "PickType": {
+        "type": "integer",
+        "enum": [
+          1,
+          2
+        ],
+        "title": "PickType",
+        "description": "选图项目类型。"
+      },
+      "PlayerRoundState": {
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "title": "Account Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PlayerStatus",
+            "default": 1
+          },
+          "current_level_index": {
+            "type": "integer",
+            "title": "Current Level Index",
+            "default": 0
+          },
+          "completed_levels": {
+            "items": {
+              "$ref": "#/components/schemas/LevelTime"
+            },
+            "type": "array",
+            "title": "Completed Levels"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            },
+            "type": "array",
+            "title": "Attempts"
+          },
+          "final_total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Total Ms"
+          },
+          "forfeited": {
+            "type": "boolean",
+            "title": "Forfeited",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "account_id"
+        ],
+        "title": "PlayerRoundState",
+        "description": "单回合中某选手的实时状态（内存）。"
+      },
+      "PlayerStatus": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3
+        ],
+        "title": "PlayerStatus",
+        "description": "选手单回合状态。"
+      },
+      "RoundRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "match_id": {
+            "type": "string",
+            "title": "Match Id"
+          },
+          "round_no": {
+            "type": "integer",
+            "title": "Round No"
+          },
+          "pick_code": {
+            "type": "string",
+            "title": "Pick Code"
+          },
+          "pick_snapshot": {
+            "$ref": "#/components/schemas/Pick"
+          },
+          "collection_snapshot": {
+            "$ref": "#/components/schemas/CollectionConfig"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RoundSource",
+            "default": 1
+          },
+          "counted": {
+            "type": "boolean",
+            "title": "Counted",
+            "default": true
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By"
+          },
+          "state_a": {
+            "$ref": "#/components/schemas/PlayerRoundState"
+          },
+          "state_b": {
+            "$ref": "#/components/schemas/PlayerRoundState"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoundVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score_a_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score A Ms"
+          },
+          "score_b_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score B Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "match_id",
+          "round_no",
+          "pick_code",
+          "pick_snapshot",
+          "collection_snapshot",
+          "state_a",
+          "state_b"
+        ],
+        "title": "RoundRecord",
+        "description": "一回合的持久化记录。"
+      },
+      "RoundSource": {
+        "type": "integer",
+        "enum": [
+          1,
+          2
+        ],
+        "title": "RoundSource",
+        "description": "回合来源。"
+      },
+      "RoundVerdict": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "title": "RoundVerdict",
+        "description": "回合胜负判定。"
+      },
+      "ScoringMethod": {
+        "type": "integer",
+        "enum": [
+          1,
+          2
+        ],
+        "title": "ScoringMethod",
+        "description": "单关项目成绩计算方式。"
+      },
+      "SeedOrderBody": {
+        "properties": {
+          "seed_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seed Order",
+            "description": "种子序（账号 id 列表）；长度须等于参赛选手数"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seed_order"
+        ],
+        "title": "SeedOrderBody",
+        "description": "设置种子序（生成赛程时决定对阵排位）。"
+      },
+      "TokenResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token",
+            "description": "JWT 令牌，用于 REST Bearer 与 WebSocket /ws/{token}"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "account_id": {
+            "type": "string",
+            "title": "Account Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "description": "登录名（唯一）"
+          },
+          "account_type": {
+            "$ref": "#/components/schemas/AccountType",
+            "description": "主角色（最高优先级）"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/AccountType"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "角色集合"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "account_id",
+          "username",
+          "account_type",
+          "roles",
+          "display_name"
+        ],
+        "title": "TokenResponse"
+      },
+      "TournamentCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "赛事名称"
+          },
+          "format": {
+            "$ref": "#/components/schemas/TournamentFormat",
+            "description": "赛制：1=单败淘汰 2=双败淘汰 3=瑞士轮"
+          },
+          "swiss_rounds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Rounds",
+            "description": "瑞士轮轮数；仅瑞士轮用，省略按 ceil(log2(N))"
+          },
+          "swiss_win_points": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Swiss Win Points",
+            "description": "瑞士轮胜场积分",
+            "default": 1
+          },
+          "swiss_loss_points": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Swiss Loss Points",
+            "description": "瑞士轮负场积分",
+            "default": 0
+          },
+          "swiss_draw_points": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Swiss Draw Points",
+            "description": "瑞士轮平场积分",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "format"
+        ],
+        "title": "TournamentCreate"
+      },
+      "TournamentFormat": {
+        "type": "integer",
+        "enum": [
+          1,
+          2,
+          3
+        ],
+        "title": "TournamentFormat",
+        "description": "赛事赛制。"
+      },
+      "TournamentOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "format": {
+            "$ref": "#/components/schemas/TournamentFormat"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TournamentStatus"
+          },
+          "participant_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Participant Ids"
+          },
+          "seed_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seed Order"
+          },
+          "referee_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Referee Ids"
+          },
+          "director_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Director Ids"
+          },
+          "swiss_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Rounds"
+          },
+          "swiss_win_points": {
+            "type": "integer",
+            "title": "Swiss Win Points"
+          },
+          "swiss_loss_points": {
+            "type": "integer",
+            "title": "Swiss Loss Points"
+          },
+          "swiss_draw_points": {
+            "type": "integer",
+            "title": "Swiss Draw Points"
+          },
+          "bracket_generated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bracket Generated At"
+          },
+          "current_round": {
+            "type": "integer",
+            "title": "Current Round"
+          },
+          "total_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rounds"
+          },
+          "winner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winner Id"
+          },
+          "final_standings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TournamentStanding"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Standings"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "format",
+          "status",
+          "participant_ids",
+          "seed_order",
+          "referee_ids",
+          "director_ids",
+          "swiss_rounds",
+          "swiss_win_points",
+          "swiss_loss_points",
+          "swiss_draw_points",
+          "bracket_generated_at",
+          "current_round",
+          "total_rounds",
+          "winner_id",
+          "final_standings",
+          "created_by",
+          "created_at",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "TournamentOut"
+      },
+      "TournamentStanding": {
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "title": "Account Id"
+          },
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "points": {
+            "type": "integer",
+            "title": "Points",
+            "default": 0
+          },
+          "wins": {
+            "type": "integer",
+            "title": "Wins",
+            "default": 0
+          },
+          "losses": {
+            "type": "integer",
+            "title": "Losses",
+            "default": 0
+          },
+          "draws": {
+            "type": "integer",
+            "title": "Draws",
+            "default": 0
+          },
+          "eliminated_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eliminated Round"
+          },
+          "buchholz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buchholz"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "account_id",
+          "rank"
+        ],
+        "title": "TournamentStanding",
+        "description": "赛事单项排名（嵌入 ``Tournament.final_standings``，不单独建集合）。"
+      },
+      "TournamentStandingOut": {
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "title": "Account Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "points": {
+            "type": "integer",
+            "title": "Points"
+          },
+          "wins": {
+            "type": "integer",
+            "title": "Wins"
+          },
+          "losses": {
+            "type": "integer",
+            "title": "Losses"
+          },
+          "draws": {
+            "type": "integer",
+            "title": "Draws"
+          },
+          "eliminated_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eliminated Round"
+          },
+          "buchholz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buchholz"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "account_id",
+          "display_name",
+          "rank",
+          "points",
+          "wins",
+          "losses",
+          "draws",
+          "eliminated_round",
+          "buchholz",
+          "note"
+        ],
+        "title": "TournamentStandingOut",
+        "description": "赛事排名项（含展示名，由控制器注入）。"
+      },
+      "TournamentStatus": {
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "title": "TournamentStatus",
+        "description": "赛事状态。"
+      },
+      "TournamentUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "swiss_rounds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Rounds"
+          },
+          "swiss_win_points": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Win Points"
+          },
+          "swiss_loss_points": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Loss Points"
+          },
+          "swiss_draw_points": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swiss Draw Points"
+          }
+        },
+        "type": "object",
+        "title": "TournamentUpdate",
+        "description": "仅 DRAFT 状态赛事可改核心字段（控制器校验）；不允许改 format。"
+      },
+      "UploadResult": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "url"
+        ],
+        "title": "UploadResult"
+      },
+      "UsernamesBody": {
+        "properties": {
+          "usernames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Usernames",
+            "description": "账号用户名列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "usernames"
+        ],
+        "title": "UsernamesBody",
+        "description": "批量按用户名增删成员（选手/裁判/导播通用）。"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "健康检查"
+    },
+    {
+      "name": "auth",
+      "description": "账号鉴权：登录签发令牌、查看当前账号"
+    },
+    {
+      "name": "accounts",
+      "description": "账号管理（管理员）：账号的创建/查询/修改/删除"
+    },
+    {
+      "name": "matches",
+      "description": "比赛比赛管理（管理员）：创建/查询比赛、配置赛制与图池"
+    },
+    {
+      "name": "logs",
+      "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细"
+    }
+  ]
+}

@@ -1,0 +1,546 @@
+# WebSocket 协议
+
+选手端 / 裁判端 / 导播端与服务端的实时通信协议。本文档由 `scripts/gen_ws_docs.py` 从 `src/twilightcupbackend/protocol.py` 自动生成（字段表与代码同步，描述集中维护于生成脚本）。
+
+## 连接与鉴权
+
+- 端点 `ws://<host>/ws/{token}`，token 为登录返回的 JWT。
+- 可选 ?seat=NAME（PLAYER_A/PLAYER_B/REFEREE/DIRECTOR）指定座位身份。
+- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`。
+- 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。
+- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接。
+- 回合中发 `reconnect_resync` 取快照后幂等补传。
+- 不带 `seat` 时按比赛指派取首个匹配（选手 A/B 由此确定）。
+- 编码 JSON，带 `type` 判别字段（下表 type 列即其字面量）。
+
+## 枚举取值
+
+**seat 座位**
+
+| 名称 | 值 |
+| --- | --- |
+| `PLAYER_A` | 1 |
+| `PLAYER_B` | 2 |
+| `REFEREE` | 3 |
+| `DIRECTOR` | 4 |
+
+**phase 比赛阶段**
+
+| 名称 | 值 |
+| --- | --- |
+| `IDLE` | 0 |
+| `PREP` | 1 |
+| `COUNTDOWN` | 2 |
+| `IN_ROUND` | 3 |
+| `ROUND_JUDGING` | 4 |
+| `ROUND_END` | 5 |
+| `MATCH_END` | 6 |
+
+**player_status 选手状态**
+
+| 名称 | 值 |
+| --- | --- |
+| `IN_GAME` | 1 |
+| `COMPLETED` | 2 |
+| `FORFEITED` | 3 |
+
+**attempt_status 尝试状态**
+
+| 名称 | 值 |
+| --- | --- |
+| `VALID` | 1 |
+| `SKIPPED` | 2 |
+| `UNFINISHED` | 3 |
+| `INVALID` | 4 |
+
+**verdict 回合判定**
+
+| 名称 | 值 |
+| --- | --- |
+| `A_WIN` | 1 |
+| `B_WIN` | 2 |
+| `TIE_REMATCH` | 3 |
+| `A_DISCONNECT_LOSS` | 4 |
+| `B_DISCONNECT_LOSS` | 5 |
+
+**pick_type 项目类型**
+
+| 名称 | 值 |
+| --- | --- |
+| `MULTI` | 1 |
+| `SINGLE` | 2 |
+
+**scoring_method 单关计分**
+
+| 名称 | 值 |
+| --- | --- |
+| `FASTEST` | 1 |
+| `AVERAGE` | 2 |
+
+**account_type 账号角色（account.roles 取值，一个账号可含多个）**
+
+| 名称 | 值 |
+| --- | --- |
+| `PLAYER` | 1 |
+| `REFEREE` | 2 |
+| `DIRECTOR` | 3 |
+| `ADMIN` | 4 |
+
+## 客户端 → 服务端
+
+### `ClientChat`
+
+- type：'chat'
+
+- 选手/裁判发送的聊天文本（以 ``!`` 开头会被当作命令解析）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `text` | str | 是 | — |  |
+
+### `ClientReadyToggle`
+
+- type：'ready_toggle'
+
+- 预留消息：实际准备切换走 ClientChat !ready 命令（仅选手）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientLevelTimeUpload`
+
+- type：'level_time_upload'
+
+- 每关完成时上报用时（断线重连后用于幂等补传）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `this_level_ms` | int | 是 | — |  |
+| `total_ms` | int | None | 否 | None |  |
+| `invalid_reasons` | list[str] | None | 否 | None |  |
+
+### `ClientAttemptSkip`
+
+- type：'attempt_skip'
+
+- 单关项目跳过某次尝试，记为 N/A。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `attempt_index` | int | 是 | — |  |
+
+### `ClientProjectComplete`
+
+- type：'project_complete'
+
+- 本回合项目全部完成。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `final_total_ms` | int | None | 否 | None |  |
+
+### `ClientForfeitSignal`
+
+- type：'forfeit_signal'
+
+- 弃权信号（多关退出 / 单关退出且 0 次有效成绩）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `reason` | 'multi_exit' | 'single_exit_0_valid' | 是 | — |  |
+
+### `ClientReconnectResync`
+
+- type：'reconnect_resync'
+
+- 断线重连后请求本回合权威快照。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+
+### `ClientRefereeMarkPrep`
+
+- type：'referee_mark_prep'
+
+- 裁判标记进入回合准备阶段。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientRefereeSelectPick`
+
+- type：'referee_select_pick'
+
+- 裁判从图池选定本回合选图；CT 类别可随消息提交词条（0-ct_tag_count 个，服务端校验枚举/互斥/数量）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `pick_code` | str | 是 | — |  |
+| `tags` | list[str] | 否 | <list> |  |
+| `retry_count` | int | None | 否 | None |  |
+
+### `ClientRefereeManualStart`
+
+- type：'referee_manual_start'
+
+- 裁判手动发起开始（触发不可中断的倒计时）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientRefereeVerdict`
+
+- type：'referee_verdict'
+
+- 裁判判定本回合胜负。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `verdict` | RoundVerdict | 是 | — |  |
+
+### `ClientRefereeEditVerdict`
+
+- type：'referee_edit_verdict'
+
+- 裁判事后修改本回合判定（实时同步导播端）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `new_verdict` | RoundVerdict | 是 | — |  |
+
+### `ClientRefereeTerminateRound`
+
+- type：'referee_terminate_round'
+
+- 裁判强制终止当前回合（异常处置）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `reason` | str | 是 | — |  |
+
+### `ClientRefereeEndMatch`
+
+- type：'referee_end_match'
+
+- 裁判手动结束比赛（胜方按比分自动判定；需已达到取胜分数）。常规流程下达到取胜分数时判定落定即自动结束，本消息用于兜底（改判后比分重回阈值、异常卡住的场次）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientCounterStart`
+
+- type：'counter_start'
+
+- 裁判启动独立倒计时器（由 ``!timer [秒]`` 触发）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seconds` | int | 是 | — |  |
+
+### `ClientCounterReset`
+
+- type：'counter_reset'
+
+- 裁判停止当前倒计时器（由 ``!timer reset`` 触发）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientDirectorSubscribe`
+
+- type：'director_subscribe'
+
+- 导播订阅（占位，导播连接天然只读）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientHeartbeat`
+
+- type：'heartbeat'
+
+- 心跳保活（导播亦可用）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+
+### `ClientDraftSync`
+
+- type：'draft_sync'
+
+- 裁判上报 ban/pick 草稿（前端权威，后端存储+转发）
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `state` | dict[str, Any] | 是 | — |  |
+
+## 服务端 → 客户端
+
+### `SrvAuthOk`
+
+- type：'auth_ok'
+
+- 连接鉴权成功，告知座位与比赛。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `account_id` | str | 是 | — |  |
+| `display_name` | str | 是 | — |  |
+| `seat` | str | 是 | — |  |
+| `match_id` | str | 是 | — |  |
+| `match_name` | str | None | 否 | None |  |
+| `player_a_name` | str | None | 否 | None |  |
+| `player_b_name` | str | None | 否 | None |  |
+
+### `SrvAuthError`
+
+- type：'auth_error'
+
+- 连接鉴权失败（令牌无效/未参与比赛等）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `msg` | str | 是 | — |  |
+
+### `SrvChat`
+
+- type：'chat'
+
+- 广播一条聊天消息（含发送者自己的回声）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `sender_id` | str | None | 是 | — |  |
+| `sender_name` | str | 是 | — |  |
+| `seat` | str | 是 | — |  |
+| `text` | str | 是 | — |  |
+| `ts` | datetime | 否 | <now_ts> |  |
+
+### `SrvSystem`
+
+- type：'system'
+
+- 广播一条系统消息（命令回执、倒计时提示、回合信息等）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `text` | str | 是 | — |  |
+| `kind` | str | 否 | 'info' |  |
+| `ts` | datetime | 否 | <now_ts> |  |
+
+### `SrvReadyState`
+
+- type：'ready_state'
+
+- 双方准备状态变更。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `a_ready` | bool | 是 | — |  |
+| `b_ready` | bool | 是 | — |  |
+
+### `SrvSeatState`
+
+- type：'seat_state'
+
+- 座席连接状态（选手连入/断开广播；新连接初始化序列亦补发全量）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seat` | str | 是 | — |  |
+| `online` | bool | 是 | — |  |
+
+### `SrvPhaseChange`
+
+- type：'phase_change'
+
+- 比赛阶段切换。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `phase` | MatchPhase | 是 | — |  |
+| `round_id` | str | None | 否 | None |  |
+
+### `SrvCountdownTick`
+
+- type：'countdown_tick'
+
+- 开始倒计时逐秒提示。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `remaining_secs` | int | 是 | — |  |
+| `source` | 'auto' | 'manual' | 是 | — |  |
+
+### `SrvCountdownAbort`
+
+- type：'countdown_abort'
+
+- 开始倒计时被中断（auto 倒计时下选手取消准备）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `reason` | str | 是 | — |  |
+
+### `SrvRoundStart`
+
+- type：'round_start'
+
+- 回合开始，向选手下发选图与关卡合集配置。pick.single_scoring 为本场单关计分方式快照（"fastest"/"average"，来自 Match.scoring_method；缺席或 null 时客户端按 fastest 处理，MULTI 回合忽略；见 backend-round-start-single-scoring）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `pick` | Pick | 是 | — |  |
+| `collection` | CollectionConfig | 是 | — |  |
+
+### `SrvRoundStartedBroadcast`
+
+- type：'round_started_broadcast'
+
+- 回合开始广播（含项目编号与名称；tags 为 CT 词条）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `pick_code` | str | 是 | — |  |
+| `pick_name` | str | 是 | — |  |
+| `tags` | list[str] | 否 | <list> |  |
+
+### `SrvPlayerStatus`
+
+- type：'player_status'
+
+- 选手单回合实时状态（重连快照亦复用此消息）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seat` | str | 是 | — |  |
+| `account_id` | str | 是 | — |  |
+| `status` | PlayerStatus | 是 | — |  |
+| `current_level_index` | int | 是 | — |  |
+| `completed_levels` | list[LevelTime] | 否 | <list> |  |
+| `attempts` | list[Attempt] | 否 | <list> |  |
+
+### `SrvLevelTimeUpdate`
+
+- type：'level_time_update'
+
+- 某选手单关用时更新（裁判/导播）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seat` | str | 是 | — |  |
+| `account_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `this_level_ms` | int | 是 | — |  |
+| `total_ms` | int | None | 否 | None |  |
+| `invalid_reasons` | list[str] | None | 否 | None |  |
+
+### `SrvRoundResult`
+
+- type：'round_result'
+
+- 本回合结算（判定与双方成绩）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `verdict` | RoundVerdict | 是 | — |  |
+| `score_a_ms` | int | None | 否 | None |  |
+| `score_b_ms` | int | None | 否 | None |  |
+| `detail` | dict[str, object] | 否 | <dict> |  |
+
+### `SrvCumulativeScore`
+
+- type：'cumulative_score'
+
+- 累计比分。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `wins_a` | int | 是 | — |  |
+| `wins_b` | int | 是 | — |  |
+| `threshold` | int | 是 | — |  |
+
+### `SrvMatchEnd`
+
+- type：'match_end'
+
+- 比赛结束，宣告胜方（判定落定且比分达到取胜分数时自动触发）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `winner` | 'A' | 'B' | 是 | — |  |
+
+### `SrvCounterState`
+
+- type：'counter_state'
+
+- 独立倒计时器状态（剩余秒数或 None）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `remaining_secs` | int | None | 否 | None |  |
+
+### `SrvCounterAlert`
+
+- type：'counter_alert'
+
+- 独立倒计时器告警（整分钟/30·20·10/5..1/0）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `remaining_secs` | int | 是 | — |  |
+
+### `SrvVerdictEdit`
+
+- type：'verdict_edit'
+
+- 判定被修改的广播（导播端）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `old_verdict` | RoundVerdict | 是 | — |  |
+| `new_verdict` | RoundVerdict | 是 | — |  |
+
+### `SrvDraftState`
+
+- type：'draft_state'
+
+- 广播 ban/pick 草稿给全员（含导播）；state 原样转发自裁判端。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `state` | dict[str, Any] | 是 | — |  |
+
+### `SrvMatchStatus`
+
+- type：'match_status'
+
+- 比赛状态变更广播（pause/resume），导播/裁判多标签同步。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `status` | MatchStatus | 是 | — |  |
+
+### `SrvError`
+
+- type：'error'
+
+- 错误回执（命令非法/权限不足/比赛已暂停等）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `code` | int | 是 | — |  |
+| `msg` | str | 是 | — |  |

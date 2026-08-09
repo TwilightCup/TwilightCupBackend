@@ -1,0 +1,77 @@
+# English system messages. Format: key = value (# or // comments, blank lines skipped).
+# Kept verbatim from the pre-i18n hardcoded strings — existing clients/tests depend on them.
+
+# --- Chat commands ---
+command.empty = Empty command
+command.unknown = Unknown command: !{name}
+ready.only_players = Only players can use !ready
+ready.on = {player} is ready
+ready.off = {player} cancelled ready
+roll.result = {player} rolled {value} (1-100)
+timer.only_referee = Only the referee can use !timer
+timer.invalid = !timer requires a positive integer or reset
+timer.positive = !timer seconds must be positive
+timer.remaining = Timer remaining {m}:{s:02d}
+timer.ended = Timer ended
+timer.started = Referee started a {seconds}s timer
+timer.reset_done = Timer reset
+timer.no_active = No active timer
+lang.only_referee = Only the referee can change language
+lang.available = Available languages: {list}
+lang.unknown = Unknown language: {id} (available: {list})
+lang.changed = Language switched to: {id}
+# --- Errors / connection (handshake phase renders these in the default language) ---
+error.auth_failed = Authentication failed
+error.token_invalid_or_expired = Token invalid or expired
+error.token_invalid = Invalid token
+error.account_missing = Account not found
+error.no_active_match = No ongoing match for this account
+error.no_running_match_wait = No ongoing match; please wait for the referee to start one
+error.not_in_match = This account is not part of the match
+error.match_missing = Match not found
+error.match_ended = This match has already ended
+error.seat_not_assigned = Account is not assigned to a seat in this match
+error.seat_mismatch = Account is not assigned as {seat} of this match
+error.match_paused = Match is paused; action unavailable
+error.bad_message = Malformed message
+error.director_readonly = Directors are read-only
+error.wrong_seat = Only {seat} can do this
+error.players_only = Only players can do this
+error.unimplemented = Unimplemented message type: {type}
+
+# --- Pause / resume ---
+pause.message = Match paused
+resume.message = Match resumed
+
+# --- Match FSM ---
+prep.phase_error = Cannot enter prep in phase {phase}
+prep.score_decided = Score already reached win threshold; end the match
+prep.started = Prep phase started; players type !ready when ready
+start.only_prep = Can only manual-start during prep
+start.no_pick = Select a pick before starting
+countdown.intro_auto = Both players ready; match auto-starts in {delay}s...
+countdown.intro_manual = Referee started; match begins in {delay}s...
+countdown.cancelled = Auto-start countdown cancelled
+pick.not_in_mappool = Pick not in mappool: {code}
+pick.selected = Referee selected: {code} - {name}{tags}{retry}
+pick.tags_category = Pick of category {category} cannot carry tags: {code}
+pick.tags_too_many = Too many tags (max {limit}): {tags}
+pick.tags_invalid = Invalid tag: {tags}
+pick.tags_conflict = Conflicting tags: Checkpoint + No Checkpoint
+pick.retry_required = Retry count required for single pick {code}: {category}
+pick.retry_min = Retry count must be >= 1: {value}
+pick.retry_not_allowed = Pick {code} of category {category} uses mappool retry_count; cannot override
+round.invalid_pick = Invalid pick; round cannot start
+round.started = Round started! Current pick: {code} - {name}
+forfeit.done = {player} forfeited ({reason})
+judging.await = Both players finished; awaiting referee verdict
+round.not_found = Round not found
+round.not_current = Not the current round; cannot terminate
+round.terminated = Referee terminated the round: {reason}
+verdict.not_now = Cannot verdict right now
+verdict.not_verdicted = Round not yet verdicted
+match.already_ended = Match already ended
+match.no_winner = Winner not decided; cannot end match
+match.ended = Match ended, winner {winner}
+match.admin_ended = Admin ended the match
+rematch.announce = Round tied; entering rematch -- !ready again
