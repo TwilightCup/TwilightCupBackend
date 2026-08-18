@@ -43,7 +43,9 @@ class LocaleCatalog:
         for file in sorted(path.glob("*.txt")):
             locale = file.stem
             self._langs[locale] = self._parse_file(file)
-            logger.info("已加载语言 %s（%d 条消息）。", locale, len(self._langs[locale]))
+            logger.info(
+                "已加载语言 %s（%d 条消息）。", locale, len(self._langs[locale])
+            )
 
     @staticmethod
     def _parse_file(file: Path) -> dict[str, str]:
@@ -63,7 +65,9 @@ class LocaleCatalog:
                 logger.warning("%s:%d 键为空，已跳过。", file.name, lineno)
                 continue
             if key in entries:
-                logger.warning("%s:%d 重复键 %s，后者覆盖前者。", file.name, lineno, key)
+                logger.warning(
+                    "%s:%d 重复键 %s，后者覆盖前者。", file.name, lineno, key
+                )
             entries[key] = value
         return entries
 

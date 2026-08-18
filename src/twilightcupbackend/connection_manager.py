@@ -148,7 +148,8 @@ class ConnectionManager:
         if error is not None or account_id is None:
             await websocket.accept()
             await self._send_model(
-                websocket, SrvAuthError(msg=error or self.tr_default("error.auth_failed"))
+                websocket,
+                SrvAuthError(msg=error or self.tr_default("error.auth_failed")),
             )
             await websocket.close()
             return None
@@ -295,7 +296,9 @@ class ConnectionManager:
                 store.countdown_source = None
             if store.phase == MatchPhase.COUNTDOWN:
                 store.phase = MatchPhase.PREP
-        await self.system_message(match_id, self.tr(match_id, "pause.message"), kind="pause")
+        await self.system_message(
+            match_id, self.tr(match_id, "pause.message"), kind="pause"
+        )
         await self.broadcast_match(match_id, SrvMatchStatus(status=MatchStatus.PAUSED))
         await self.kick_players(match_id)
 
@@ -305,7 +308,9 @@ class ConnectionManager:
         由 REST ``POST /me/matches/{id}/resume`` 在置 ``status=RUNNING`` 后调用；
         选手随后自行重连（``find_running_for_player`` 重新命中本场）。
         """
-        await self.system_message(match_id, self.tr(match_id, "resume.message"), kind="resume")
+        await self.system_message(
+            match_id, self.tr(match_id, "resume.message"), kind="resume"
+        )
         await self.broadcast_match(match_id, SrvMatchStatus(status=MatchStatus.RUNNING))
 
     # ------------------------------------------------------------------
@@ -327,7 +332,9 @@ class ConnectionManager:
         ):
             await self._send(
                 conn,
-                SrvError(code=403, msg=self.tr(conn.match_id, "error.director_readonly")),
+                SrvError(
+                    code=403, msg=self.tr(conn.match_id, "error.director_readonly")
+                ),
             )
             return
 
@@ -631,8 +638,10 @@ class ConnectionManager:
                     Seat.PLAYER_A if match.player_a_id == account_id else Seat.PLAYER_B
                 )
                 if requested_seat and Seat[requested_seat] != seat:
-                    return None, None, self.tr_default(
-                        "error.seat_mismatch", seat=requested_seat
+                    return (
+                        None,
+                        None,
+                        self.tr_default("error.seat_mismatch", seat=requested_seat),
                     )
                 return match, seat, None
             return None, None, self.tr_default("error.no_running_match_wait")

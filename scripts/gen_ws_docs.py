@@ -31,7 +31,9 @@ from twilightcupbackend.datatypes import (
 # 消息描述（按模型类名），缺省则标记“待补充”。
 DESCRIPTIONS: dict[str, str] = {
     # 客户端 -> 服务端
-    "ClientChat": "选手/裁判发送的聊天文本（以 ``!`` 开头会被当作命令解析）。",
+    "ClientChat": "选手/裁判发送的聊天文本（以 ``!`` 开头会被当作命令解析："
+    "``!ready`` 仅选手、``!roll`` 所有人、``!timer [秒]|reset`` 与 "
+    "``!lang [id]`` 仅裁判——切换比赛系统消息语言，见 docs/locales.md）。",
     "ClientReadyToggle": "预留消息：实际准备切换走 ClientChat !ready 命令（仅选手）。",
     "ClientLevelTimeUpload": "每关完成时上报用时（断线重连后用于幂等补传）。",
     "ClientAttemptSkip": "单关项目跳过某次尝试，记为 N/A。",

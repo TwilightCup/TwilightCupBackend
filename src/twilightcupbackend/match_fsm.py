@@ -276,7 +276,9 @@ class MatchEngine:
         if error is not None:
             key, kw = error
             await self.cm.send_to_seat(
-                match_id, Seat.REFEREE, SrvError(code=400, msg=self.cm.tr(match_id, key, **kw))
+                match_id,
+                Seat.REFEREE,
+                SrvError(code=400, msg=self.cm.tr(match_id, key, **kw)),
             )
             return
         store.pending_pick_code = pick_code
@@ -472,9 +474,7 @@ class MatchEngine:
         )
         await self.cm.system_message(
             store.id,
-            self.cm.tr(
-                store.id, "round.started", code=pick.code, name=pick.name
-            ),
+            self.cm.tr(store.id, "round.started", code=pick.code, name=pick.name),
             kind="round_start",
         )
         await self.cm.broadcast_match(
@@ -542,7 +542,9 @@ class MatchEngine:
             # （INVALID_ATTEMPT_REQ §4.3）
             new_attempt = Attempt(
                 index=level_index,
-                status=AttemptStatus.INVALID if invalid_reasons else AttemptStatus.VALID,
+                status=AttemptStatus.INVALID
+                if invalid_reasons
+                else AttemptStatus.VALID,
                 time_ms=this_level_ms,  # 保留（证据）
                 invalid_reasons=invalid_reasons or [],
             )

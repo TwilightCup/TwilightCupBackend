@@ -265,8 +265,10 @@ class MatchController(Routable):
         engine = cm.match_engine if cm is not None else None
         # 有实时会话且能从比分推导胜方 → 与裁判手动结束同一完整流程
         # （_end_match 内部会置 ENDED、写 winner/final_result、踢选手、推进赛程）
-        if cm is not None and engine is not None and await engine.force_end_full(
-            match_id
+        if (
+            cm is not None
+            and engine is not None
+            and await engine.force_end_full(match_id)
         ):
             return {"ok": True}
         match.status = MatchStatus.ENDED
