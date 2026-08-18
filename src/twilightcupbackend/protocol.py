@@ -374,6 +374,18 @@ class SrvMatchStatus(BaseModel):
     status: MatchStatus
 
 
+class SrvDisplaced(BaseModel):
+    """本连接被同身份（账号+座位+比赛）新连接以 exclusive=1 顶掉。
+
+    先于 close(4001) 送达；被顶掉 ≠ 鉴权失败（token 仍有效，勿登出/重连），
+    前端应停止自动重连并提示「已在其他窗口打开」。见 exclusive takeover 契约。
+    """
+
+    model_config = _cfg
+    type: Literal["displaced"] = "displaced"
+    reason: str  # 目前仅 "superseded_by_new_connection"
+
+
 class SrvError(BaseModel):
     model_config = _cfg
     type: Literal["error"] = "error"
@@ -403,5 +415,6 @@ ServerMessage = (
     | SrvVerdictEdit
     | SrvDraftState
     | SrvMatchStatus
+    | SrvDisplaced
     | SrvError
 )

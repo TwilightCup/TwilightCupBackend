@@ -66,7 +66,7 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvCountdownTick": "开始倒计时逐秒提示。",
     "SrvCountdownAbort": "开始倒计时被中断（auto 倒计时下选手取消准备）。",
     "SrvRoundStart": "回合开始，向选手下发选图与关卡合集配置。"
-    "pick.single_scoring 为本场单关计分方式快照（\"fastest\"/\"average\"，"
+    'pick.single_scoring 为本场单关计分方式快照（"fastest"/"average"，'
     "来自 Match.scoring_method；缺席或 null 时客户端按 fastest 处理，"
     "MULTI 回合忽略；见 backend-round-start-single-scoring）。",
     "SrvRoundStartedBroadcast": "回合开始广播（含项目编号与名称；tags 为 CT 词条）。",
@@ -80,6 +80,9 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvVerdictEdit": "判定被修改的广播（导播端）。",
     "SrvDraftState": "广播 ban/pick 草稿给全员（含导播）；state 原样转发自裁判端。",
     "SrvMatchStatus": "比赛状态变更广播（pause/resume），导播/裁判多标签同步。",
+    "SrvDisplaced": "本连接被同身份（账号+座位+比赛）且带 ``exclusive=1`` 的新连接"
+    "顶掉：先于 close(4001) 送达。被顶掉 ≠ 鉴权失败（token 仍有效），"
+    "前端应停止自动重连并提示「已在其他窗口打开」。",
     "SrvError": "错误回执（命令非法/权限不足/比赛已暂停等）。",
 }
 
@@ -170,9 +173,16 @@ def main() -> None:
     out.append(
         "- 端点 `ws://<host>/ws/{token}`，token 为登录返回的 JWT。\n"
         "- 可选 ?seat=NAME（PLAYER_A/PLAYER_B/REFEREE/DIRECTOR）指定座位身份。\n"
+        "- 可选 ?match=ID 连到指定比赛（裁判/导播多标签页选场）。\n"
+        "- 可选 ?exclusive=1 要求独占身份 key（账号+座位+比赛）：同 key 既有连接"
+        "先收 `displaced` 再被 close(4001) 顶掉，新连接照常 auth_ok + 快照；"
+        "被顶掉连接的在途消息一律忽略。key 含 match，故裁判不同场多标签、"
+        "多角色多座位互不影响；导播 OBS 多源不带 exclusive 仍并存"
+        "（裁判端/选手端用，导播各场景页不用）。\n"
         "- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`。\n"
         "- 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。\n"
-        "- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接。\n"
+        "- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接"
+        "（不带 exclusive 时为静默替换，关闭码 1000）。\n"
         "- 回合中发 `reconnect_resync` 取快照后幂等补传。\n"
         "- 不带 `seat` 时按比赛指派取首个匹配（选手 A/B 由此确定）。\n"
         "- 编码 JSON，带 `type` 判别字段（下表 type 列即其字面量）。\n"

@@ -66,6 +66,25 @@ class MatchStore:
     def id(self) -> str:
         return self.match.id
 
+    def same_key_connections(self, account_id: str, seat: Seat) -> list[Connection]:
+        """同身份 key（account_id + seat + 本比赛）的既有连接，供 exclusive 接管顶掉。
+
+        导播从集合中筛同账号（OBS 多源常多连接并存）；其余座位单槽，
+        槽内连接同账号才属同 key（裁判改派后他人的连接不算，走静默替换旧语义）。
+        """
+        if seat == Seat.DIRECTOR:
+            return [c for c in self.directors if c.account_id == account_id]
+        conn = self.connections.get(seat)
+        if conn is not None and conn.account_id == account_id:
+            return [conn]
+        return []
+
+    def has_connection(self, conn: Connection) -> bool:
+        """该连接是否仍登记于本比赛（被顶掉/清理后其在途消息据此忽略）。"""
+        if conn.seat == Seat.DIRECTOR:
+            return conn in self.directors
+        return self.connections.get(conn.seat) is conn
+
     def seats_connected(self) -> set[Seat]:
         seats = set(self.connections)
         if self.directors:
