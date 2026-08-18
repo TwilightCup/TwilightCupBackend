@@ -13,6 +13,7 @@ from fastapi import WebSocket
 
 from .config import settings
 from .datatypes import Match, MatchPhase, Seat
+from .protocol import PreloadStatus, SrvPickAnnounced
 from .timer_service import CountdownTimer, CounterTimer
 
 
@@ -25,6 +26,8 @@ class Connection:
     display_name: str
     seat: Seat
     match_id: str
+    # 客户端能力声明（?cap= 逗号分隔；如 preload1 = 会上报预载状态）
+    capabilities: frozenset[str] = frozenset()
 
     @property
     def read_only(self) -> bool:
@@ -48,6 +51,12 @@ class MatchStore:
         self.pending_pick_tags: list[str] = []
         # 待选图裁判指定的重试次数（CT/EX 单关必填；其余类别 None 沿用图池预设）
         self.pending_pick_retry: int | None = None
+        # 最近一次已播报的选图快照（select_pick 时广播并留存；PREP 重连握手重放，
+        # tie-rematch 从 pick_snapshot 重建仅存不发；begin_prep 随 pending 一起清空）
+        self.pick_announced: SrvPickAnnounced | None = None
+        # 双方预载状态（内存态，不持久化；absent = 从未上报）
+        self.preload_a: PreloadStatus = "absent"
+        self.preload_b: PreloadStatus = "absent"
         self.wins_a: int = 0
         self.wins_b: int = 0
         self.round_counter: int = 0
@@ -57,6 +66,8 @@ class MatchStore:
         # 比赛开始倒计时（auto 可被取消 / manual 不可）
         self.countdown_timer: CountdownTimer | None = None
         self.countdown_source: str | None = None
+        # 预载门控超时兜底计时器（双方 ready 且门控未过时启动；见 match_fsm）
+        self.preload_gate_timer: CountdownTimer | None = None
         # ban/pick 草稿状态（裁判端权威上报，后端转发给导播）
         self.draft_state: dict | None = None
         # 当前比赛系统消息语言（裁判 !lang 切换；内存态，重启回默认）

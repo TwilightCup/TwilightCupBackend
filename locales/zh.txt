@@ -54,6 +54,7 @@ countdown.intro_auto = 双方已就绪，{delay} 秒后自动开始…
 countdown.intro_manual = 裁判已开始，{delay} 秒后开始比赛…
 countdown.cancelled = 自动开始倒计时已取消
 pick.not_in_mappool = 选图不在图池中：{code}
+pick.phase_error = 当前阶段（{phase}）无法选图
 pick.selected = 裁判选图：{code} - {name}{tags}{retry}
 pick.tags_category = 类别 {category} 的选图不能携带词条：{code}
 pick.tags_too_many = 词条过多（上限 {limit}）：{tags}
@@ -62,6 +63,11 @@ pick.tags_conflict = 词条冲突：Checkpoint 与 No Checkpoint
 pick.retry_required = 单关 {code}（{category}）必须指定重试次数
 pick.retry_min = 重试次数必须 ≥ 1：{value}
 pick.retry_not_allowed = 选图 {code}（类别 {category}）使用图池重试次数，不可覆盖
+
+# --- 预载门控（合集提前下发）---
+preload.failed = {seat}预载失败{detail}，回合开始后将回退标准加载
+preload.timeout_force = 预载等待超时，强制开始回合
+preload.manual_skip = 裁判跳过预载等待，强制开始回合
 round.invalid_pick = 选图无效，无法开始回合
 round.started = 回合开始！当前选图：{code} - {name}
 forfeit.done = {player} 弃权（{reason}）

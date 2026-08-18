@@ -35,6 +35,9 @@ from .datatypes import (
     now_ts,
 )
 from .protocol import (
+    PRELOAD_CAP,
+    PreloadReportStatus,
+    PreloadStatus,
     SrvCountdownAbort,
     SrvCountdownTick,
     SrvCumulativeScore,
@@ -42,7 +45,9 @@ from .protocol import (
     SrvLevelTimeUpdate,
     SrvMatchEnd,
     SrvPhaseChange,
+    SrvPickAnnounced,
     SrvPlayerStatus,
+    SrvPreloadState,
     SrvReadyState,
     SrvRoundResult,
     SrvRoundStart,
@@ -223,6 +228,7 @@ class MatchEngine:
         store.pending_pick_code = None
         store.pending_pick_tags = []
         store.pending_pick_retry = None
+        store.pick_announced = None
         await self.cm.broadcast_match(match_id, SrvPhaseChange(phase=MatchPhase.PREP))
         await self.cm.system_message(
             match_id,
@@ -233,6 +239,7 @@ class MatchEngine:
             match_id,
             SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready),
         )
+        await self._reset_preload(store)
 
     def _players_conflict(self, match: Match) -> str | None:
         """单场强制：本场选手若已在另一场 RUNNING 比赛中，返回冲突文案；否则 None。
@@ -256,6 +263,20 @@ class MatchEngine:
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
+            return
+        # 倒计时/回合进行中拒绝改图（预载门控 R3.2：防倒计时中改图与预载赛跑）；
+        # PREP/IDLE/ROUND_END 保持开放（词条校验本身与阶段无关）
+        if store.phase in (MatchPhase.COUNTDOWN, MatchPhase.IN_ROUND):
+            await self.cm.send_to_seat(
+                match_id,
+                Seat.REFEREE,
+                SrvError(
+                    code=400,
+                    msg=self.cm.tr(
+                        match_id, "pick.phase_error", phase=store.phase.name
+                    ),
+                ),
+            )
             return
         pick = store.match.mappool.get_pick(pick_code)
         if pick is None:
@@ -284,6 +305,8 @@ class MatchEngine:
         store.pending_pick_code = pick_code
         store.pending_pick_tags = tags
         store.pending_pick_retry = retry_count
+        # 改图（含重新应用）旧预载必然作废 → 重置并广播，再提前下发新合集
+        await self._reset_preload(store)
         suffix = f" [{', '.join(tags)}]" if tags else ""
         retry_suffix = f" x{retry_count}" if retry_count is not None else ""
         await self.cm.system_message(
@@ -298,19 +321,29 @@ class MatchEngine:
             ),
             kind="pick",
         )
+        # 合集提前下发（预览；round_start 仍是唯一权威）。全体成员（两选手席 +
+        # 裁判 + 导播），选手端以最新一次为准（丢弃旧预载）；快照留存供
+        # PREP 断线重连握手重放。
+        announced = SrvPickAnnounced(
+            pick_code=pick.code,
+            pick=self._pending_pick_enriched(store, pick),
+            collection=self._expand_collection(pick.collection),
+        )
+        store.pick_announced = announced
+        await self.cm.broadcast_match(match_id, announced)
 
     # ------------------------------------------------------------------
     # 就绪 → 倒计时
     # ------------------------------------------------------------------
 
     async def on_ready_changed(self, match_id: str) -> None:
-        """``!ready`` 切换后调用：双就绪启动 auto 倒计时，否则中断 auto 倒计时。"""
+        """``!ready`` 切换后调用：双就绪走预载门控的自动开始检查，否则中断倒计时。"""
         store = self.cm.registry.get(match_id)
         if store is None:
             return
         both = store.a_ready and store.b_ready
         if store.phase == MatchPhase.PREP and both:
-            await self._start_countdown(store, "auto")
+            await self._auto_start_check(store)
         elif (
             store.phase == MatchPhase.COUNTDOWN
             and store.countdown_source == "auto"
@@ -329,11 +362,18 @@ class MatchEngine:
                 SrvError(code=400, msg=self.cm.tr(match_id, "start.only_prep")),
             )
             return
+        # 手动开始无条件放行（现状）；存在预载未完/等待中席位时向全体播提示
+        if self._preload_incomplete(store):
+            await self.cm.system_message(
+                store.id, self.cm.tr(store.id, "preload.manual_skip"), kind="preload"
+            )
         await self._start_countdown(store, "manual")
 
     async def _start_countdown(self, store: MatchStore, source: str) -> None:
         if store.phase == MatchPhase.COUNTDOWN:
             return  # 已在倒计时
+        # 门控等待的超时计时器一并撤销（门控通过或手动强制两条路径都到这里）
+        await self._cancel_preload_gate_timer(store)
         if store.pending_pick_code is None:
             await self.cm.send_to_seat(
                 store.id,
@@ -383,11 +423,167 @@ class MatchEngine:
             store.id, SrvCountdownAbort(reason="player_unready")
         )
         await self.cm.broadcast_match(store.id, SrvPhaseChange(phase=MatchPhase.PREP))
+        # 倒计时中止回 PREP：预载状态随之重置（选手重新 ready 后重走门控）
+        await self._reset_preload(store)
 
     async def _on_countdown_zero(self, store: MatchStore) -> None:
         store.countdown_timer = None
         store.countdown_source = None
         await self._begin_round(store)
+
+    # ------------------------------------------------------------------
+    # 预载状态与开局门控（合集提前下发与预载门控 R2）
+    # ------------------------------------------------------------------
+
+    async def on_preload_report(
+        self,
+        match_id: str,
+        seat: Seat,
+        status: PreloadReportStatus,
+        detail: str | None,
+    ) -> None:
+        """选手端预载状态上报：更新并广播，失败告警，然后复查自动开始。"""
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        if store.phase != MatchPhase.PREP:
+            # 非 PREP 上报无意义（进入回合时状态已清场），静默忽略
+            return
+        if seat == Seat.PLAYER_A:
+            store.preload_a = status
+        else:
+            store.preload_b = status
+        await self.cm.broadcast_match(
+            store.id,
+            SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+        )
+        if status == "failed":
+            # 不阻塞开局（选手端 round_start 时回退标准加载路径），仅告警
+            suffix = f": {detail}" if detail else ""
+            await self.cm.system_message(
+                store.id,
+                self.cm.tr(
+                    store.id,
+                    "preload.failed",
+                    seat=i18n.seat_name(seat, self.cm.locale_for(store.id)),
+                    detail=suffix,
+                ),
+                kind="preload",
+            )
+            self._log_event(
+                store.id, "preload_failed", {"seat": seat.name, "detail": detail}
+            )
+        # 最后一份上报可能早于对手 ready：满足条件的瞬间立即复查，避免卡住
+        await self._auto_start_check(store)
+
+    async def _auto_start_check(self, store: MatchStore) -> None:
+        """双方就绪后的自动开始入口（ready 切换与 preload_report 共用）。
+
+        自动倒计时开始条件 = 双方 ready 且双方预载门控通过；门控不满足时
+        维持 PREP 并挂超时兜底计时器。
+        """
+        if store.phase != MatchPhase.PREP or not (store.a_ready and store.b_ready):
+            return
+        if store.pending_pick_code is None:
+            # 与 _start_countdown 的拒绝一致：提示裁判先选图（保留现状行为）
+            await self.cm.send_to_seat(
+                store.id,
+                Seat.REFEREE,
+                SrvError(code=400, msg=self.cm.tr(store.id, "start.no_pick")),
+            )
+            return
+        if self._preload_gate_ok(store):
+            await self._start_countdown(store, "auto")
+        else:
+            self._ensure_preload_gate_timer(store)
+
+    def _preload_gate_ok(self, store: MatchStore) -> bool:
+        """双方席位门控均通过才放行。"""
+        return all(
+            self._seat_gate_ok(store, seat, status)
+            for seat, status in (
+                (Seat.PLAYER_A, store.preload_a),
+                (Seat.PLAYER_B, store.preload_b),
+            )
+        )
+
+    @staticmethod
+    def _seat_gate_ok(store: MatchStore, seat: Seat, status: PreloadStatus) -> bool:
+        """单席位门控：done/na/failed 通过（failed 收到时已告警，不阻塞）；
+        in_progress 等待；absent 仅在该席位连接声明了预载能力（新版插件）时等待，
+        旧客户端/断线席位视为豁免（在途的非 absent 状态不受断线影响）。
+        """
+        if status in ("done", "na", "failed"):
+            return True
+        if status == "in_progress":
+            return False
+        conn = store.connections.get(seat)
+        return conn is None or PRELOAD_CAP not in conn.capabilities
+
+    def _preload_incomplete(self, store: MatchStore) -> bool:
+        """是否存在明确的预载未完信号（手动开始跳过提示的触发条件）。
+
+        任一席位 in_progress/failed，或门控等待计时器仍在走（双方 ready 但
+        有能力席位尚未上报）。纯 absent 且未在等待的常规手动开始不提示。
+        """
+        return (
+            store.preload_gate_timer is not None
+            or store.preload_a in ("in_progress", "failed")
+            or store.preload_b in ("in_progress", "failed")
+        )
+
+    def _ensure_preload_gate_timer(self, store: MatchStore) -> None:
+        """门控等待的超时兜底计时器；已计时则不重置（起点=首次进入等待的时刻）。
+
+        超时后强制开始（选手端 round_start 时回退标准加载）。配置 ≤0 视为
+        关闭兜底（只等门控通过或裁判手动开始）。
+        """
+        if store.preload_gate_timer is not None:
+            return
+        timeout = self.cm.settings.preload_gate_timeout
+        if timeout <= 0:
+            return
+
+        async def on_tick(remaining: int) -> None:  # 静默走秒，不广播
+            pass
+
+        async def on_zero() -> None:
+            store.preload_gate_timer = None
+            # 防御性复查：取消路径之外的局面变化（如等待中断连）兜住
+            if (
+                store.phase != MatchPhase.PREP
+                or not (store.a_ready and store.b_ready)
+                or store.pending_pick_code is None
+            ):
+                return
+            await self.cm.system_message(
+                store.id, self.cm.tr(store.id, "preload.timeout_force"), kind="preload"
+            )
+            self._log_event(
+                store.id,
+                "preload_gate_timeout",
+                {"a": store.preload_a, "b": store.preload_b},
+            )
+            await self._start_countdown(store, "auto")
+
+        timer = CountdownTimer(timeout, "preload_gate", on_tick, on_zero)
+        store.preload_gate_timer = timer
+        timer.start()
+
+    async def _cancel_preload_gate_timer(self, store: MatchStore) -> None:
+        if store.preload_gate_timer is not None:
+            await store.preload_gate_timer.cancel()
+            store.preload_gate_timer = None
+
+    async def _reset_preload(self, store: MatchStore) -> None:
+        """重置双方预载状态并广播（进 PREP / 改图 / 倒计时中止 / 回合开始）。"""
+        await self._cancel_preload_gate_timer(store)
+        store.preload_a = "absent"
+        store.preload_b = "absent"
+        await self.cm.broadcast_match(
+            store.id,
+            SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+        )
 
     # ------------------------------------------------------------------
     # 回合开始（回合内数据流由 M7 扩展）
@@ -411,6 +607,26 @@ class MatchEngine:
         lv = self.db.levels.get(level_id)
         return lv.name if lv is not None else level_id
 
+    def _pending_pick_enriched(self, store: MatchStore, pick: Pick) -> Pick:
+        """按 pending 裁剪合并出下发的 pick（pick_announced 与 round_start 共用）。
+
+        回合 pick 快照冻结本回合词条与裁判指定的重试次数（图池原件不动；
+        见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
+        single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
+        Match.scoring_method 建赛时定、必填，恒非 None）。
+        """
+        return pick.model_copy(
+            update={
+                "tags": list(store.pending_pick_tags),
+                "retry_count": (
+                    store.pending_pick_retry
+                    if store.pending_pick_retry is not None
+                    else pick.retry_count
+                ),
+                "single_scoring": store.match.scoring_method.name.lower(),
+            }
+        )
+
     async def _begin_round(self, store: MatchStore) -> None:
         assert store.pending_pick_code is not None
         pick = store.match.mappool.get_pick(store.pending_pick_code)
@@ -423,22 +639,10 @@ class MatchEngine:
                 store.id, SrvPhaseChange(phase=MatchPhase.PREP)
             )
             return
+        # 回合开始后预载状态不再有意义，清场
+        await self._reset_preload(store)
 
-        # 回合 pick 快照冻结本回合词条与裁判指定的重试次数（图池原件不动；
-        # 见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
-        # single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
-        # Match.scoring_method 建赛时定、必填，恒非 None）。
-        pick = pick.model_copy(
-            update={
-                "tags": list(store.pending_pick_tags),
-                "retry_count": (
-                    store.pending_pick_retry
-                    if store.pending_pick_retry is not None
-                    else pick.retry_count
-                ),
-                "single_scoring": store.match.scoring_method.name.lower(),
-            }
-        )
+        pick = self._pending_pick_enriched(store, pick)
 
         store.round_counter += 1
         record = RoundRecord(
@@ -984,6 +1188,13 @@ class MatchEngine:
         # 重赛沿用原回合词条集合与重试次数（backend-ct-pick-tags §2.3），裁判无需重选
         store.pending_pick_tags = list(pick.tags)
         store.pending_pick_retry = pick.retry_count
+        # 不重发 pick_announced（选手端沿用上一回合预载）；仅留存快照供
+        # PREP 断线重连握手重放。pick_snapshot 已是下发形态，直接复用。
+        store.pick_announced = SrvPickAnnounced(
+            pick_code=pick.code,
+            pick=pick,
+            collection=self._expand_collection(pick.collection),
+        )
         store.phase = MatchPhase.PREP
         store.reset_ready()
         await self.cm.broadcast_match(

@@ -6,7 +6,8 @@
 
 - 端点 `ws://<host>/ws/{token}`，token 为登录返回的 JWT。
 - 可选 ?seat=NAME（PLAYER_A/PLAYER_B/REFEREE/DIRECTOR）指定座位身份。
-- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`。
+- 可选 ?cap=（逗号分隔的能力声明，如 `preload1`=会上报预载状态）；预载开局门控只对声明了能力的席位生效。
+- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发 `preload_state` 快照。
 - 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。
 - 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接。
 - 回合中发 `reconnect_resync` 取快照后幂等补传。
@@ -163,6 +164,17 @@
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `round_id` | str | 是 | — |  |
+
+### `ClientPreloadReport`
+
+- type：'preload_report'
+
+- 选手端预载状态上报（仅 PLAYER_A/PLAYER_B，PREP 阶段有意义；场景级预载仅 MULTI 合集，SINGLE 报 ``na``）。``failed`` 不阻塞开局（round_start 时选手端回退标准加载），仅触发 kind=preload 告警；旧版客户端连接不带 ``cap=preload1`` 不上报，门控豁免。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `status` | 'in_progress' | 'done' | 'failed' | 'na' | 是 | — |  |
+| `detail` | str | None | 否 | None |  |
 
 ### `ClientRefereeMarkPrep`
 
@@ -348,6 +360,17 @@
 | `a_ready` | bool | 是 | — |  |
 | `b_ready` | bool | 是 | — |  |
 
+### `SrvPreloadState`
+
+- type：'preload_state'
+
+- 双方预载状态广播（上报/重置时；取值 absent|in_progress|done|failed|na，absent=从未上报）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `a_status` | 'absent' | 'in_progress' | 'done' | 'failed' | 'na' | 是 | — |  |
+| `b_status` | 'absent' | 'in_progress' | 'done' | 'failed' | 'na' | 是 | — |  |
+
 ### `SrvSeatState`
 
 - type：'seat_state'
@@ -390,6 +413,18 @@
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `reason` | str | 是 | — |  |
+
+### `SrvPickAnnounced`
+
+- type：'pick_announced'
+
+- 选图确定即向全体成员提前下发合集（预览性质；``round_start`` 仍是唯一权威，PREP 期间改图导致两者不同属正常流程，选手端自行作废旧预载）。裁判重新应用选图会重发，以最新一次为准；pick 与 collection 与 ``round_start`` 同构（含词条/重试/计分方式、关卡 id 已展开为显示名）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `pick_code` | str | 是 | — |  |
+| `pick` | Pick | 是 | — |  |
+| `collection` | CollectionConfig | 是 | — |  |
 
 ### `SrvRoundStart`
 

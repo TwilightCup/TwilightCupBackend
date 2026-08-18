@@ -37,6 +37,7 @@ from .protocol import (
     ClientHeartbeat,
     ClientLevelTimeUpload,
     ClientMessage,
+    ClientPreloadReport,
     ClientProjectComplete,
     ClientReconnectResync,
     ClientRefereeEditVerdict,
@@ -54,6 +55,7 @@ from .protocol import (
     SrvError,
     SrvMatchStatus,
     SrvPhaseChange,
+    SrvPreloadState,
     SrvReadyState,
     SrvSeatState,
     SrvSystem,
@@ -81,6 +83,7 @@ _PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
     ClientAttemptSkip,
     ClientProjectComplete,
     ClientForfeitSignal,
+    ClientPreloadReport,
 )
 
 
@@ -136,6 +139,7 @@ class ConnectionManager:
         token: str,
         requested_seat: str | None = None,
         requested_match: str | None = None,
+        capabilities: str | None = None,
     ) -> Connection | None:
         """鉴权并登记连接；失败时接受后发送 auth_error 并关闭。
 
@@ -143,6 +147,7 @@ class ConnectionManager:
         以特定身份连接，如 admin 同时以裁判与导播身份各开一条连接）。
         requested_match 指定时（如裁判多标签页选某场），连到该比赛
         并校验账号是其成员；否则自动挑选该账号最新一场（兼容选手/导播）。
+        capabilities 为 ``?cap=`` 逗号分隔的能力声明（如 ``preload1``）。
         """
         account_id, error = self._authenticate(token)
         if error is not None or account_id is None:
@@ -185,6 +190,9 @@ class ConnectionManager:
             display_name=account.display_name,
             seat=seat,
             match_id=match.id,
+            capabilities=frozenset(
+                c.strip() for c in (capabilities or "").split(",") if c.strip()
+            ),
         )
         # 同座位重连：导播允许多连接并存（网页+OBS 等）；选手/裁判替换旧连接
         if seat == Seat.DIRECTOR:
@@ -214,6 +222,20 @@ class ConnectionManager:
         # 补发当前 ban/pick 草稿状态（新连导播立即拿到进度）
         if store.draft_state is not None:
             await self._send(conn, SrvDraftState(state=store.draft_state))
+        # PREP 阶段补发选图预览与预载状态快照（断线重连的选手端恢复预载）：
+        # pick_announced 仅选手席需要（裁判/导播仅展示，现状忽略）；
+        # preload_state 对所有席位补发（重连端消除陈旧态）。其他阶段不补发
+        # （round_start 本就不重放，预载在 COUNTDOWN/IN_ROUND 已无意义）。
+        if store.phase == MatchPhase.PREP:
+            if (
+                seat in (Seat.PLAYER_A, Seat.PLAYER_B)
+                and store.pick_announced is not None
+            ):
+                await self._send(conn, store.pick_announced)
+            await self._send(
+                conn,
+                SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+            )
         # 座席在线状态广播（backend-seat-presence）：选手连入通知全员
         # （新连接自身由下方补发覆盖，故排除，避免重复）；初始化序列末尾
         # 给新连接补发全量在线状态（重连方消除陈旧离线态）
@@ -294,6 +316,10 @@ class ConnectionManager:
                 await store.countdown_timer.cancel()
                 store.countdown_timer = None
                 store.countdown_source = None
+            # 预载门控超时计时器同理取消（暂停期不应在后台强制开局）。
+            if store.preload_gate_timer is not None:
+                await store.preload_gate_timer.cancel()
+                store.preload_gate_timer = None
             if store.phase == MatchPhase.COUNTDOWN:
                 store.phase = MatchPhase.PREP
         await self.system_message(
@@ -371,13 +397,16 @@ class ConnectionManager:
                             conn.match_id, SrvDraftState(state=st)
                         )
             case ClientRefereeMarkPrep():
-                await engine.begin_prep(conn.match_id)
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.begin_prep(conn.match_id)
             case ClientRefereeSelectPick(
                 pick_code=pick_code, tags=tags, retry_count=retry
             ):
-                await engine.select_pick(conn.match_id, pick_code, tags, retry)
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.select_pick(conn.match_id, pick_code, tags, retry)
             case ClientRefereeManualStart():
-                await engine.manual_start(conn.match_id)
+                if await self._require_seat(conn, Seat.REFEREE):
+                    await engine.manual_start(conn.match_id)
             case ClientRefereeVerdict(round_id=rid, verdict=v):
                 if await self._require_seat(conn, Seat.REFEREE):
                     await engine.on_verdict(conn.match_id, rid, v)
@@ -395,6 +424,9 @@ class ConnectionManager:
             case ClientReconnectResync(round_id=rid):
                 if await self._require_player(conn):
                     await engine.on_reconnect_resync(conn.match_id, conn.seat, rid)
+            case ClientPreloadReport(status=st, detail=d):
+                if await self._require_player(conn):
+                    await engine.on_preload_report(conn.match_id, conn.seat, st, d)
             case ClientLevelTimeUpload(
                 round_id=rid,
                 level_index=li,

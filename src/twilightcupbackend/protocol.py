@@ -25,6 +25,16 @@ from .datatypes import (
 
 _cfg = ConfigDict(extra="forbid")
 
+# 预载状态取值（合集提前下发与预载门控）：
+# in_progress 预载已开始 / done 完成 / failed 失败（回退标准加载）
+# / na 不适用（SINGLE 合集）；preload_state 额外含 absent（从未上报，初始值）。
+PreloadReportStatus = Literal["in_progress", "done", "failed", "na"]
+PreloadStatus = Literal["absent", "in_progress", "done", "failed", "na"]
+
+# 预载门控能力标识（WS 连接 ``?cap=`` 参数声明；门控只对声明了能力的席位生效，
+# 未声明的旧客户端席位视为 na 豁免）
+PRELOAD_CAP = "preload1"
+
 # ===========================================================================
 # 客户端 -> 服务端
 # ===========================================================================
@@ -78,6 +88,19 @@ class ClientReconnectResync(BaseModel):
     model_config = _cfg
     type: Literal["reconnect_resync"] = "reconnect_resync"
     round_id: str
+
+
+class ClientPreloadReport(BaseModel):
+    """选手端预载状态上报（仅 PLAYER_A/PLAYER_B 席位；PREP 阶段有意义）。
+
+    场景级预载仅 MULTI 合集，SINGLE 合集选手端报 ``na``；旧版客户端不上报
+    （连接不带 ``cap=preload1`` 能力，门控豁免）。
+    """
+
+    model_config = _cfg
+    type: Literal["preload_report"] = "preload_report"
+    status: PreloadReportStatus
+    detail: str | None = None  # 失败原因等，仅日志/告警用
 
 
 class ClientRefereeMarkPrep(BaseModel):
@@ -175,6 +198,7 @@ ClientMessage = Annotated[
     | ClientProjectComplete
     | ClientForfeitSignal
     | ClientReconnectResync
+    | ClientPreloadReport
     | ClientRefereeMarkPrep
     | ClientRefereeSelectPick
     | ClientRefereeManualStart
@@ -246,6 +270,15 @@ class SrvReadyState(BaseModel):
     b_ready: bool
 
 
+class SrvPreloadState(BaseModel):
+    """双方预载状态广播（状态变更与重置时；同 ready_state 的广播模式）。"""
+
+    model_config = _cfg
+    type: Literal["preload_state"] = "preload_state"
+    a_status: PreloadStatus
+    b_status: PreloadStatus
+
+
 class SrvSeatState(BaseModel):
     """座席连接状态（选手连入/断开时广播；见 backend-seat-presence）。"""
 
@@ -273,6 +306,20 @@ class SrvCountdownAbort(BaseModel):
     model_config = _cfg
     type: Literal["countdown_abort"] = "countdown_abort"
     reason: str
+
+
+class SrvPickAnnounced(BaseModel):
+    """选图确定即向全体成员提前下发合集（预览；round_start 仍是唯一权威）。
+
+    裁判每次重新应用选图都会重发，选手端以最新一次为准；
+    PREP 阶段选手断线重连时在握手序列补发（见 connection_manager.connect）。
+    """
+
+    model_config = _cfg
+    type: Literal["pick_announced"] = "pick_announced"
+    pick_code: str
+    pick: Pick  # 完整 Pick（与 round_start.pick 同构，含词条/重试/计分方式）
+    collection: CollectionConfig  # 与 round_start.collection 同构（已展开为显示名）
 
 
 class SrvRoundStart(BaseModel):
@@ -387,10 +434,12 @@ ServerMessage = (
     | SrvChat
     | SrvSystem
     | SrvReadyState
+    | SrvPreloadState
     | SrvSeatState
     | SrvPhaseChange
     | SrvCountdownTick
     | SrvCountdownAbort
+    | SrvPickAnnounced
     | SrvRoundStart
     | SrvRoundStartedBroadcast
     | SrvPlayerStatus

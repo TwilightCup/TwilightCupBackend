@@ -53,6 +53,7 @@ countdown.intro_auto = Both players ready; match auto-starts in {delay}s...
 countdown.intro_manual = Referee started; match begins in {delay}s...
 countdown.cancelled = Auto-start countdown cancelled
 pick.not_in_mappool = Pick not in mappool: {code}
+pick.phase_error = Cannot select a pick in phase {phase}
 pick.selected = Referee selected: {code} - {name}{tags}{retry}
 pick.tags_category = Pick of category {category} cannot carry tags: {code}
 pick.tags_too_many = Too many tags (max {limit}): {tags}
@@ -61,6 +62,11 @@ pick.tags_conflict = Conflicting tags: Checkpoint + No Checkpoint
 pick.retry_required = Retry count required for single pick {code}: {category}
 pick.retry_min = Retry count must be >= 1: {value}
 pick.retry_not_allowed = Pick {code} of category {category} uses mappool retry_count; cannot override
+
+# --- Preload gating (pick announcement) ---
+preload.failed = {seat} preload failed{detail}; the round will fall back to standard loading
+preload.timeout_force = Preload wait timed out; forcing the round to start
+preload.manual_skip = Referee skipped the preload wait; forcing the round to start
 round.invalid_pick = Invalid pick; round cannot start
 round.started = Round started! Current pick: {code} - {name}
 forfeit.done = {player} forfeited ({reason})

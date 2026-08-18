@@ -26,6 +26,7 @@ class Settings:
     log_folder: str  # 日志目录
     log_level: str  # 日志级别
     default_countdown_delay: int  # 默认开始倒计时延迟（秒）
+    preload_gate_timeout: int  # 预载门控超时兜底（秒，超时强制开始回合）
     s3_endpoint: str  # MinIO/S3 端点，如 localhost:9000
     s3_access_key: str  # 访问密钥
     s3_secret_key: str  # 秘密密钥
@@ -53,6 +54,7 @@ class Settings:
             log_folder=os.getenv("LOG_FOLDER", "./logs"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             default_countdown_delay=int(os.getenv("DEFAULT_COUNTDOWN_DELAY", "5")),
+            preload_gate_timeout=int(os.getenv("PRELOAD_GATE_TIMEOUT", "60")),
             s3_endpoint=os.getenv("S3_ENDPOINT", "localhost:9000"),
             s3_access_key=os.getenv("S3_ACCESS_KEY", "minioadmin"),
             s3_secret_key=os.getenv("S3_SECRET_KEY", "minioadmin"),

@@ -113,8 +113,10 @@ def _expect_select_error(  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
-        # select_pick 校验与阶段无关，不走 mark_prep：同一 world 里第二次调用时
-        # phase 已是 PREP，mark_prep 会被拒（只回 1 条系统消息），固定 drain 会挂死
+        # select_pick 的词条校验与阶段无关（IDLE/PREP/ROUND_END 均可触发），不走
+        # mark_prep：同一 world 里第二次调用时 phase 已是 PREP，mark_prep 会被拒
+        # （只回 1 条系统消息），固定 drain 会挂死。（COUNTDOWN/IN_ROUND 会被
+        # 阶段守卫直接拒绝，见 tests/test_preload.py。）
         _select(ws_r, pick, tags, retry)
         err = _recv_until(
             ws_r,

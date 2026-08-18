@@ -19,11 +19,13 @@ def register_ws(app: FastAPI) -> None:
         token: str,
         seat: str | None = None,
         match: str | None = None,
+        cap: str | None = None,
     ) -> None:
         """seat 为可选 query 参数，多角色账号用以指定本连接的座位身份；
-        match 为可选 query 参数，连到指定比赛（裁判多标签页选场）。"""
+        match 为可选 query 参数，连到指定比赛（裁判多标签页选场）；
+        cap 为可选 query 参数，逗号分隔的客户端能力声明（如 preload1=会上报预载）。"""
         cm: ConnectionManager = app.state.connection_manager
-        conn = await cm.connect(websocket, token, seat, match)
+        conn = await cm.connect(websocket, token, seat, match, cap)
         if conn is None:
             return
         try:
