@@ -20,12 +20,17 @@ def register_ws(app: FastAPI) -> None:
         seat: str | None = None,
         match: str | None = None,
         cap: str | None = None,
+        exclusive: str | None = None,
     ) -> None:
         """seat 为可选 query 参数，多角色账号用以指定本连接的座位身份；
         match 为可选 query 参数，连到指定比赛（裁判多标签页选场）；
-        cap 为可选 query 参数，逗号分隔的客户端能力声明（如 preload1=会上报预载）。"""
+        cap 为可选 query 参数，逗号分隔的客户端能力声明（如 preload1=会上报预载）；
+        exclusive=1 为可选 query 参数，要求独占身份 key（同 key 旧连接被顶掉，
+        见 ConnectionManager.connect）——裁判端/选手端用，导播 OBS 多源不带。"""
         cm: ConnectionManager = app.state.connection_manager
-        conn = await cm.connect(websocket, token, seat, match, cap)
+        conn = await cm.connect(
+            websocket, token, seat, match, cap, exclusive=exclusive in ("1", "true")
+        )
         if conn is None:
             return
         try:

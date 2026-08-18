@@ -6,10 +6,12 @@
 
 - 端点 `ws://<host>/ws/{token}`，token 为登录返回的 JWT。
 - 可选 ?seat=NAME（PLAYER_A/PLAYER_B/REFEREE/DIRECTOR）指定座位身份。
+- 可选 ?match=ID 连到指定比赛（裁判/导播多标签页选场）。
 - 可选 ?cap=（逗号分隔的能力声明，如 `preload1`=会上报预载状态）；预载开局门控只对声明了能力的席位生效。
+- 可选 ?exclusive=1 要求独占身份 key（账号+座位+比赛）：同 key 既有连接先收 `displaced` 再被 close(4001) 顶掉，新连接照常 auth_ok + 快照；被顶掉连接的在途消息一律忽略。key 含 match，故裁判不同场多标签、多角色多座位互不影响；导播 OBS 多源不带 exclusive 仍并存（裁判端/选手端用，导播各场景页不用）。
 - 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发 `preload_state` 快照。
 - 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。
-- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接。
+- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接（不带 exclusive 时为静默替换，关闭码 1000）。
 - 回合中发 `reconnect_resync` 取快照后幂等补传。
 - 不带 `seat` 时按比赛指派取首个匹配（选手 A/B 由此确定）。
 - 编码 JSON，带 `type` 判别字段（下表 type 列即其字面量）。
@@ -568,6 +570,16 @@
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `status` | MatchStatus | 是 | — |  |
+
+### `SrvDisplaced`
+
+- type：'displaced'
+
+- 本连接被同身份（账号+座位+比赛）且带 ``exclusive=1`` 的新连接顶掉：先于 close(4001) 送达。被顶掉 ≠ 鉴权失败（token 仍有效），前端应停止自动重连并提示「已在其他窗口打开」。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `reason` | str | 是 | — |  |
 
 ### `SrvError`
 

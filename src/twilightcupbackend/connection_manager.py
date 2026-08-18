@@ -51,6 +51,7 @@ from .protocol import (
     SrvAuthError,
     SrvAuthOk,
     SrvChat,
+    SrvDisplaced,
     SrvDraftState,
     SrvError,
     SrvMatchStatus,
@@ -85,6 +86,12 @@ _PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
     ClientForfeitSignal,
     ClientPreloadReport,
 )
+
+# exclusive 接管（last-wins takeover）：新连接以 exclusive=1 要求独占其身份 key
+# （account_id + seat + match）时，同 key 旧连接被顶掉所用的关闭码与原因。
+# 4xxx 属应用自定义区间；前端凭 displaced 消息或 close 码 4001 判定「连接已转移」。
+DISPLACED_CLOSE_CODE = 4001
+DISPLACED_REASON = "superseded_by_new_connection"
 
 
 def normalize_draft(state: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +147,7 @@ class ConnectionManager:
         requested_seat: str | None = None,
         requested_match: str | None = None,
         capabilities: str | None = None,
+        exclusive: bool = False,
     ) -> Connection | None:
         """鉴权并登记连接；失败时接受后发送 auth_error 并关闭。
 
@@ -148,6 +156,10 @@ class ConnectionManager:
         requested_match 指定时（如裁判多标签页选某场），连到该比赛
         并校验账号是其成员；否则自动挑选该账号最新一场（兼容选手/导播）。
         capabilities 为 ``?cap=`` 逗号分隔的能力声明（如 ``preload1``）。
+        exclusive 为真时要求独占身份 key（账号+座位+比赛）：同 key 既有连接
+        （无论对方是否 exclusive）先收 displaced 再被 close(4001) 顶掉；
+        key 含 match，故裁判不同场多标签、多角色多座位、导播不带 exclusive 的
+        OBS 多源并存均不受影响。
         """
         account_id, error = self._authenticate(token)
         if error is not None or account_id is None:
@@ -194,14 +206,28 @@ class ConnectionManager:
                 c.strip() for c in (capabilities or "").split(",") if c.strip()
             ),
         )
+        # exclusive 接管的临界区：注销同 key 旧连接 + 注册新连接之间无 await，
+        # 保证原子完成；旧连接自注销一刻起，其在途消息一律被 handle 忽略。
+        displaced: list[Connection] = []
+        if exclusive:
+            displaced = store.same_key_connections(account.id, seat)
+            for old in displaced:
+                self._remove_connection(store, old)
         # 同座位重连：导播允许多连接并存（网页+OBS 等）；选手/裁判替换旧连接
+        legacy: Connection | None = None
         if seat == Seat.DIRECTOR:
             store.directors.add(conn)
         else:
-            old = store.connections.get(seat)
+            previous = store.connections.get(seat)
             store.connections[seat] = conn
-            if old is not None:
-                await self._safe_close(old.websocket)
+            # 非 exclusive（或裁判改派后不同账号）的旧语义：静默替换旧连接
+            if previous is not None and previous not in displaced:
+                legacy = previous
+        # 顶掉旧连接：displaced 先于关闭帧送达，前端凭其或 close 码 4001 判定
+        for old in displaced:
+            await self._displace(old)
+        if legacy is not None:
+            await self._safe_close(legacy.websocket)
 
         await self._send(
             conn,
@@ -344,6 +370,10 @@ class ConnectionManager:
     # ------------------------------------------------------------------
 
     async def handle(self, conn: Connection, raw: str) -> None:
+        # 已被顶掉/清理的连接：在途消息一律忽略，不得再影响比赛状态
+        store = self.registry.get(conn.match_id)
+        if store is None or not store.has_connection(conn):
+            return
         try:
             msg = parse_client_message(raw)
         except ValidationError:
@@ -732,8 +762,27 @@ class ConnectionManager:
     async def _send_model(self, websocket: WebSocket, msg: ServerMessage) -> None:
         await websocket.send_text(msg.model_dump_json())
 
-    async def _safe_close(self, websocket: WebSocket) -> None:
+    async def _displace(self, old: Connection) -> None:
+        """顶掉一条同 key 旧连接（exclusive 接管）。
+
+        先发 displaced 通知再 close(4001)，保证通知先于关闭帧送达；对端可能
+        已是 TCP 死连接，发送/关闭失败仅记日志（此时连接已注销，不占 key）。
+        """
+        self.logger.info(
+            "Seat %s connection displaced by new exclusive connection on match %s.",
+            old.seat.name,
+            old.match_id,
+        )
         try:
-            await websocket.close()
+            await self._send_model(old.websocket, SrvDisplaced(reason=DISPLACED_REASON))
+        except Exception:
+            self.logger.debug(
+                "发送 displaced 失败（连接可能已死），继续关闭。", exc_info=True
+            )
+        await self._safe_close(old.websocket, code=DISPLACED_CLOSE_CODE)
+
+    async def _safe_close(self, websocket: WebSocket, code: int = 1000) -> None:
+        try:
+            await websocket.close(code=code)
         except Exception:
             self.logger.debug("关闭旧连接失败，忽略。", exc_info=True)
