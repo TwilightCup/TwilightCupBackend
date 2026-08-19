@@ -103,6 +103,9 @@ def test_archive_ended_then_lists(env) -> None:  # type: ignore[no-untyped-def]
     out = resp.json()
     assert out["id"] == s_ended.id
     assert out["archived_at"] is not None
+    # 管理端响应须解析双方用户名（供前端按选手搜索；db 须传入 from_match）
+    assert out["player_a_username"] == "pa"
+    assert out["player_b_username"] == "pb"
     # 状态机不受影响
     assert out["status"] == MatchStatus.ENDED
     assert db.matches.get(s_ended.id).archived_at is not None
@@ -112,6 +115,7 @@ def test_archive_ended_then_lists(env) -> None:  # type: ignore[no-untyped-def]
     assert resp.status_code == 200
     row = next(m for m in resp.json() if m["id"] == s_ended.id)
     assert row["archived_at"] is not None
+    assert row["player_a_username"] == "pa"
 
     # 选手/裁判「我的比赛」不再包含
     for account in (pa, ref):

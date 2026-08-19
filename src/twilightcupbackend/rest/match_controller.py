@@ -92,7 +92,7 @@ class MatchController(Routable):
         if conflict:
             raise HTTPException(status.HTTP_409_CONFLICT, conflict)
         self.db.matches.insert(match)
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @get(
         "",
@@ -110,7 +110,8 @@ class MatchController(Routable):
         _: Account = Depends(require_admin),
     ) -> list[MatchOut]:
         return [
-            MatchOut.from_match(s, None, self.storage) for s in self.db.matches.find()
+            MatchOut.from_match(s, self.db, self.storage)
+            for s in self.db.matches.find()
         ]
 
     @get(
@@ -131,7 +132,7 @@ class MatchController(Routable):
         match = self.db.matches.get(match_id)
         if match is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @patch(
         "/{match_id}",
@@ -178,7 +179,7 @@ class MatchController(Routable):
             if conflict:
                 raise HTTPException(status.HTTP_409_CONFLICT, conflict)
         self.db.matches.replace(match)
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @staticmethod
     def _transition(match: Match, target: MatchStatus) -> None:
@@ -317,7 +318,7 @@ class MatchController(Routable):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛已归档")
         match.archived_at = now_ts()
         self.db.matches.replace(match)
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @post(
         "/{match_id}/unarchive",
@@ -344,4 +345,4 @@ class MatchController(Routable):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛未归档")
         match.archived_at = None
         self.db.matches.replace(match)
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
