@@ -388,6 +388,9 @@ class Match(Document):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     paused_at: datetime | None = None  # 最近一次暂停时刻（审计/展示用）
+    # 归档时刻（NULL=未归档）。纯管理端列表整理标记，与状态机正交：
+    # 不影响 MatchStatus / match_log / fixture 推进 / 选手占用等任何逻辑。
+    archived_at: datetime | None = None
     # 赛事归属（可选；非赛事对决为 None）。赛程引擎据此关联回 Fixture。
     tournament_id: str | None = None
     fixture_id: str | None = None

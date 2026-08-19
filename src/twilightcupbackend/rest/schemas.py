@@ -145,6 +145,7 @@ class MatchOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
+    archived_at: datetime | None = None  # 归档时刻（null=未归档，仅列表整理用）
 
     @classmethod
     def from_match(
@@ -190,6 +191,7 @@ class MatchOut(BaseModel):
             created_at=session.created_at,
             started_at=session.started_at,
             ended_at=session.ended_at,
+            archived_at=session.archived_at,
         )
 
 

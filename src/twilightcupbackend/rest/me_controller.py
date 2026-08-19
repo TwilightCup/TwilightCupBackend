@@ -61,12 +61,15 @@ class MeController(Routable):
         "/matches",
         response_model=list[MatchSummary],
         summary="我参与的比赛",
-        description="返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。",
+        description="返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。"
+        "已归档（archived_at 非空）的比赛不再下发。",
     )
     def matches(
         self, account: Account = Depends(get_current_account)
     ) -> list[MatchSummary]:
         matches = self.db.matches.find_by_member(account.id)
+        # 已归档比赛为管理端列表整理收纳，成员端无需再看到
+        matches = [s for s in matches if s.archived_at is None]
         matches.sort(
             key=lambda s: (s.status == MatchStatus.ENDED, -s.created_at.timestamp())
         )

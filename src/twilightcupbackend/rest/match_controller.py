@@ -98,7 +98,8 @@ class MatchController(Routable):
         "",
         response_model=list[MatchOut],
         summary="比赛列表",
-        description="返回全部比赛。",
+        description="返回全部比赛（含已归档，archived_at 非空表示已归档）；"
+        "筛选/分页由前端客户端完成。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "需要管理员权限"},
@@ -286,3 +287,61 @@ class MatchController(Routable):
             )
             await cm.kick_players(match_id)
         return {"ok": True}
+
+    @post(
+        "/{match_id}/archive",
+        response_model=MatchOut,
+        summary="归档已结束比赛",
+        description="把已结束（ENDED）的比赛归档（写 archived_at）。归档是纯列表"
+        "整理功能，与状态机正交：不影响 MatchStatus、日志、赛程推进与选手占用。"
+        "归档后比赛仍出现在 /admin/matches 列表（带 archived_at，供前端筛选与"
+        "取消归档），但 /me/matches 不再下发。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "需要管理员权限"},
+            404: {"description": "比赛不存在"},
+            400: {"description": "比赛未结束 / 已归档"},
+        },
+    )
+    def archive(
+        self,
+        match_id: str,
+        _: Account = Depends(require_admin),
+    ) -> MatchOut:
+        match = self.db.matches.get(match_id)
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        if match.status != MatchStatus.ENDED:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已结束的比赛可归档")
+        if match.archived_at is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛已归档")
+        match.archived_at = now_ts()
+        self.db.matches.replace(match)
+        return MatchOut.from_match(match, None, self.storage)
+
+    @post(
+        "/{match_id}/unarchive",
+        response_model=MatchOut,
+        summary="取消归档",
+        description="把已归档的比赛恢复为未归档（archived_at 置空），"
+        "/me/matches 重新对其成员下发。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "需要管理员权限"},
+            404: {"description": "比赛不存在"},
+            400: {"description": "比赛未归档"},
+        },
+    )
+    def unarchive(
+        self,
+        match_id: str,
+        _: Account = Depends(require_admin),
+    ) -> MatchOut:
+        match = self.db.matches.get(match_id)
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        if match.archived_at is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛未归档")
+        match.archived_at = None
+        self.db.matches.replace(match)
+        return MatchOut.from_match(match, None, self.storage)

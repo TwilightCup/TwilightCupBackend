@@ -340,13 +340,68 @@
         }
       }
     },
+    "/admin/matches/{match_id}/archive": {
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "归档已结束比赛",
+        "description": "把已结束（ENDED）的比赛归档（写 archived_at）。归档是纯列表整理功能，与状态机正交：不影响 MatchStatus、日志、赛程推进与选手占用。归档后比赛仍出现在 /admin/matches 列表（带 archived_at，供前端筛选与取消归档），但 /me/matches 不再下发。",
+        "operationId": "archive_admin_matches__match_id__archive_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "400": {
+            "description": "比赛未结束 / 已归档"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/matches": {
       "get": {
         "tags": [
           "matches"
         ],
         "summary": "比赛列表",
-        "description": "返回全部比赛。",
+        "description": "返回全部比赛（含已归档，archived_at 非空表示已归档）；筛选/分页由前端客户端完成。",
         "operationId": "list_admin_matches_get",
         "responses": {
           "200": {
@@ -427,7 +482,7 @@
           "matches"
         ],
         "summary": "强制结束比赛（管理员）",
-        "description": "把进行中（RUNNING/CREATED）的比赛标记为 ENDED，断开双方选手并广播结束。用于裁判弃赛/异常导致卡住时释放选手（否则该选手的下一场 begin_prep 被单场规则挡）。",
+        "description": "把进行中（RUNNING/CREATED）的比赛标记为 ENDED，断开双方选手并广播结束。能从比分推导胜方（达到取胜分数或领先）时走完整结束流程：记录 winner/final_result 并推进赛程；比分持平或无实时会话时仅标记 ENDED + 释放选手。用于裁判弃赛/异常导致卡住时释放选手（否则该选手的下一场 begin_prep 被单场规则挡）。",
         "operationId": "force_end_admin_matches__match_id__end_post",
         "parameters": [
           {
@@ -578,6 +633,61 @@
           },
           "409": {
             "description": "状态切换非法 / 选手在另一场进行中的比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/matches/{match_id}/unarchive": {
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "取消归档",
+        "description": "把已归档的比赛恢复为未归档（archived_at 置空），/me/matches 重新对其成员下发。",
+        "operationId": "unarchive_admin_matches__match_id__unarchive_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "400": {
+            "description": "比赛未归档"
           },
           "422": {
             "description": "Validation Error",
@@ -2165,7 +2275,7 @@
           "me"
         ],
         "summary": "我参与的比赛",
-        "description": "返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。",
+        "description": "返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。已归档（archived_at 非空）的比赛不再下发。",
         "operationId": "matches_me_matches_get",
         "responses": {
           "200": {
@@ -2939,6 +3049,13 @@
               }
             ],
             "title": "Time Ms"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons"
           }
         },
         "type": "object",
@@ -2953,7 +3070,8 @@
         "enum": [
           1,
           2,
-          3
+          3,
+          4
         ],
         "title": "AttemptStatus",
         "description": "单关项目单次尝试状态。"
@@ -3638,6 +3756,13 @@
               }
             ],
             "title": "Total Ms"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons"
           }
         },
         "type": "object",
@@ -4094,6 +4219,18 @@
               }
             ],
             "title": "Ended At"
+          },
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
           }
         },
         "type": "object",
@@ -4364,6 +4501,17 @@
             },
             "type": "array",
             "title": "Tags"
+          },
+          "single_scoring": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Single Scoring"
           }
         },
         "type": "object",
