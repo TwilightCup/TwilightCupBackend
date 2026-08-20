@@ -7,6 +7,7 @@ M4 实现：连接/鉴权、聊天中转、系统消息广播、导播只读；�
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from logging import Logger, getLogger
 from typing import TYPE_CHECKING, Any
@@ -129,6 +130,8 @@ class ConnectionManager:
         self.registry = registry
         self.settings = settings
         self.logger = logger or getLogger("ConnectionManager")
+        # 后台任务（断连提示等）：保留引用避免被 GC，完成后自动丢弃。
+        self._background_tasks: set[asyncio.Task[None]] = set()
         # M5 注入：处理 ``!`` 命令
         self.command_router: CommandRouter | None = None
         # M6 注入：比赛状态机
@@ -271,6 +274,19 @@ class ConnectionManager:
                 SrvSeatState(seat=seat.name, online=True),
                 exclude=conn,
             )
+            # 裁判/导播需要显式的连接提示，而不只是状态点（断线重连优化）。
+            # 排除新连接自身，避免改变选手端握手的既有消息条数。
+            await self.system_message(
+                store.id,
+                self.tr(
+                    store.id,
+                    "seat.online",
+                    name=conn.display_name,
+                    seat=seat.name,
+                ),
+                kind="seat",
+                exclude=conn,
+            )
         for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
             await self._send(
                 conn,
@@ -289,6 +305,19 @@ class ConnectionManager:
         self._remove_connection(store, conn)
         if was_current:
             await self._broadcast_seat_state(store, conn.seat)
+            # 仅真正离线时发系统提示；被同座位新连接替换（顶号重连）不提示，
+            # 与新连接侧的 online 广播一致，避免 false-offline 刷屏。
+            # 提示派发为独立任务：disconnect 由端点 finally 触发，此时当前
+            # websocket 任务可能正处于取消/收尾流程，同步等待第二次广播
+            # 会在取消边界上阻塞（TestClient 场景可复现）。
+            if conn.seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+                task = asyncio.create_task(
+                    self._seat_offline_notice(
+                        store.id, conn.display_name, conn.seat.name
+                    )
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
         self.logger.info(
             "Seat %s disconnected from match %s.", conn.seat.name, conn.match_id
         )
@@ -613,8 +642,28 @@ class ConnectionManager:
         """向单个连接发送消息。"""
         await self._send(conn, msg)
 
+    async def _seat_offline_notice(
+        self, match_id: str, display_name: str, seat: str
+    ) -> None:
+        """断连提示的独立任务：持久化并广播，失败只记日志。"""
+        try:
+            await self.system_message(
+                match_id,
+                self.tr(match_id, "seat.offline", name=display_name, seat=seat),
+                kind="seat",
+            )
+        except Exception:
+            self.logger.exception(
+                "断连系统提示发送失败（match=%s, seat=%s）。", match_id, seat
+            )
+
     async def system_message(
-        self, match_id: str, text: str, kind: str = "info"
+        self,
+        match_id: str,
+        text: str,
+        kind: str = "info",
+        *,
+        exclude: Connection | None = None,
     ) -> None:
         """持久化（系统聊天日志）并广播系统消息。"""
         chat = ChatMessage(
@@ -626,7 +675,9 @@ class ConnectionManager:
             is_system=True,
         )
         self.db.chat_messages.insert(chat)
-        await self.broadcast_match(match_id, SrvSystem(text=text, kind=kind))
+        await self.broadcast_match(
+            match_id, SrvSystem(text=text, kind=kind), exclude=exclude
+        )
 
     # ------------------------------------------------------------------
     # 辅助
