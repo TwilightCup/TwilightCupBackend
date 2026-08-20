@@ -10,7 +10,7 @@
 - 可选 ?cap=（逗号分隔的能力声明，如 `preload1`=会上报预载状态）；预载开局门控只对声明了能力的席位生效。
 - 可选 ?exclusive=1 要求独占身份 key（账号+座位+比赛）：同 key 既有连接先收 `displaced` 再被 close(4001) 顶掉，新连接照常 auth_ok + 快照；被顶掉连接的在途消息一律忽略。key 含 match，故裁判不同场多标签、多角色多座位互不影响；导播 OBS 多源不带 exclusive 仍并存（裁判端/选手端用，导播各场景页不用）。
 - 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发 `preload_state` 快照。
-- 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。
+- 导播连接只读：除 `director_subscribe`/`heartbeat`/`director_command` 外入站一律拒绝；`director_command` 仅定向转发给同账号其他导播连接（OBS 舞台），不影响比赛状态。
 - 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接（不带 exclusive 时为静默替换，关闭码 1000）。
 - 回合中发 `reconnect_resync` 取快照后幂等补传。
 - 不带 `seat` 时按比赛指派取首个匹配（选手 A/B 由此确定）。
@@ -277,6 +277,17 @@
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
+
+### `ClientDirectorCommand`
+
+- type：'director_command'
+
+- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）与 Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 是 | — |  |
+| `payload` | dict[str, Any] | 否 | <dict> |  |
 
 ### `ClientHeartbeat`
 
@@ -560,6 +571,17 @@
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `state` | dict[str, Any] | 是 | — |  |
+
+### `SrvDirectorCommand`
+
+- type：'director_cmd'
+
+- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `action` | str | 是 | — |  |
+| `payload` | dict[str, Any] | 否 | <dict> |  |
 
 ### `SrvMatchStatus`
 

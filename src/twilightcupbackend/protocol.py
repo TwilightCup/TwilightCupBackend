@@ -177,6 +177,28 @@ class ClientDirectorSubscribe(BaseModel):
     type: Literal["director_subscribe"] = "director_subscribe"
 
 
+class ClientDirectorCommand(BaseModel):
+    """导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令。
+
+    控制台（Chrome）与舞台（OBS 内置 CEF）分属不同进程，localStorage +
+    StorageEvent 不互通，故场景切换与 Coming Soon 倒计时操控经服务端定向
+    转发（不落库、不广播选手/裁判）。payload 按 action 不同含义：
+    switch_scene: {"scene": "soon"}（SceneKey 字符串）；
+    soon_start: {}（从 paused 恢复或首次启动）；soon_pause: {}（暂停倒计时）；
+    soon_reset: {}（重置为 idle）；
+    soon_set_target: {"target_ms": 300000}（改目标毫秒数）。
+    """
+
+    model_config = _cfg
+    type: Literal["director_command"] = "director_command"
+    # 指令类别
+    action: Literal[
+        "switch_scene", "soon_start", "soon_pause", "soon_reset", "soon_set_target"
+    ]
+    # 指令载荷（见类 docstring）
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ClientHeartbeat(BaseModel):
     model_config = _cfg
     type: Literal["heartbeat"] = "heartbeat"
@@ -209,6 +231,7 @@ ClientMessage = Annotated[
     | ClientCounterStart
     | ClientCounterReset
     | ClientDirectorSubscribe
+    | ClientDirectorCommand
     | ClientHeartbeat
     | ClientDraftSync,
     Field(discriminator="type"),
@@ -413,6 +436,19 @@ class SrvDraftState(BaseModel):
     state: dict[str, Any]
 
 
+class SrvDirectorCommand(BaseModel):
+    """定向转发给同账号其他 DIRECTOR 连接（OBS 舞台）的操控指令。
+
+    action/payload 原样转发自 ClientDirectorCommand；仅发 sender 之外的
+    同账号导播连接（每个导播只控自己的舞台），选手/裁判不收，发送方不回执。
+    """
+
+    model_config = _cfg
+    type: Literal["director_cmd"] = "director_cmd"
+    action: str  # 同 ClientDirectorCommand.action
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class SrvMatchStatus(BaseModel):
     """比赛级状态变更广播（pause/resume），便于导播端、裁判多标签实时同步。"""
 
@@ -463,6 +499,7 @@ ServerMessage = (
     | SrvCounterAlert
     | SrvVerdictEdit
     | SrvDraftState
+    | SrvDirectorCommand
     | SrvMatchStatus
     | SrvDisplaced
     | SrvError

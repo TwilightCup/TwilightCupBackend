@@ -57,6 +57,11 @@ DESCRIPTIONS: dict[str, str] = {
     "ClientCounterStart": "裁判启动独立倒计时器（由 ``!timer [秒]`` 触发）。",
     "ClientCounterReset": "裁判停止当前倒计时器（由 ``!timer reset`` 触发）。",
     "ClientDirectorSubscribe": "导播订阅（占位，导播连接天然只读）。",
+    "ClientDirectorCommand": "导播控制台发往同账号其他导播连接（OBS 舞台）的操控"
+    '指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）与 Coming '
+    "Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/"
+    '``soon_set_target``，set_target payload ``{"target_ms": ...}``）。'
+    "服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。",
     "ClientHeartbeat": "心跳保活（导播亦可用）。",
     "ClientDraftSync": "裁判上报 ban/pick 草稿（前端权威，后端存储+转发）",
     # 服务端 -> 客户端
@@ -90,6 +95,9 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvCounterAlert": "独立倒计时器告警（整分钟/30·20·10/5..1/0）。",
     "SrvVerdictEdit": "判定被修改的广播（导播端）。",
     "SrvDraftState": "广播 ban/pick 草稿给全员（含导播）；state 原样转发自裁判端。",
+    "SrvDirectorCommand": "定向转发导播控制台操控指令（action/payload 原样来自 "
+    "``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），"
+    "每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。",
     "SrvMatchStatus": "比赛状态变更广播（pause/resume），导播/裁判多标签同步。",
     "SrvDisplaced": "本连接被同身份（账号+座位+比赛）且带 ``exclusive=1`` 的新连接"
     "顶掉：先于 close(4001) 送达。被顶掉 ≠ 鉴权失败（token 仍有效），"
@@ -195,7 +203,9 @@ def main() -> None:
         "- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；"
         "PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发"
         " `preload_state` 快照。\n"
-        "- 导播连接只读：除 `director_subscribe`/`heartbeat` 外入站一律拒绝。\n"
+        "- 导播连接只读：除 `director_subscribe`/`heartbeat`/`director_command` 外"
+        "入站一律拒绝；`director_command` 仅定向转发给同账号其他导播连接"
+        "（OBS 舞台），不影响比赛状态。\n"
         "- 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接"
         "（不带 exclusive 时为静默替换，关闭码 1000）。\n"
         "- 回合中发 `reconnect_resync` 取快照后幂等补传。\n"

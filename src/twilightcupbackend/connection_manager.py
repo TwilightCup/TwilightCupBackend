@@ -31,6 +31,7 @@ from .datatypes import (
 from .protocol import (
     ClientAttemptSkip,
     ClientChat,
+    ClientDirectorCommand,
     ClientDirectorSubscribe,
     ClientDraftSync,
     ClientForfeitSignal,
@@ -51,6 +52,7 @@ from .protocol import (
     SrvAuthError,
     SrvAuthOk,
     SrvChat,
+    SrvDirectorCommand,
     SrvDisplaced,
     SrvDraftState,
     SrvError,
@@ -72,7 +74,8 @@ if TYPE_CHECKING:
 CommandRouter = Callable[[Connection, str], Awaitable[bool]]
 
 # 暂停（PAUSED）期间需拒绝的比赛类 WS 动作。chat/heartbeat/director_subscribe/
-# draft_sync/reconnect_resync 不拦（聊天、保活、草稿同步、只读快照仍可用）。
+# draft_sync/reconnect_resync/director_command 不拦（聊天、保活、草稿同步、
+# 只读快照、导播舞台操控仍可用）。
 _PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
     ClientRefereeMarkPrep,
     ClientRefereeSelectPick,
@@ -384,7 +387,7 @@ class ConnectionManager:
             return
 
         if conn.read_only and not isinstance(
-            msg, (ClientDirectorSubscribe, ClientHeartbeat)
+            msg, (ClientDirectorSubscribe, ClientHeartbeat, ClientDirectorCommand)
         ):
             await self._send(
                 conn,
@@ -415,6 +418,13 @@ class ConnectionManager:
                 await self._on_chat(conn, text)
             case ClientDirectorSubscribe() | ClientHeartbeat():
                 pass
+            case ClientDirectorCommand(action=act, payload=pl):
+                # 导播控制台 → 同账号其他导播连接（OBS 舞台）：原样转发，
+                # 不落库、不回执 sender（瞬时操控指令，控制台无需回声）
+                if await self._require_seat(conn, Seat.DIRECTOR):
+                    await self.broadcast_to_other_directors(
+                        conn, SrvDirectorCommand(action=act, payload=pl)
+                    )
             case ClientDraftSync(state=st):
                 # 裁判上报 ban/pick 草稿状态 → 存储 + 转发给全员（含导播）
                 if await self._require_seat(conn, Seat.REFEREE):
@@ -594,6 +604,32 @@ class ConnectionManager:
                 dead.append(conn)
                 self.logger.debug("广播发送失败，清理该连接。", exc_info=True)
         # 清理半开/已断连接，避免导播多连接场景下累积垃圾
+        for conn in dead:
+            self._remove_connection(store, conn)
+
+    async def broadcast_to_other_directors(
+        self, sender: Connection, msg: ServerMessage
+    ) -> None:
+        """定向广播给同比赛内 sender 之外的同账号 DIRECTOR 连接。
+
+        导播控制台与 OBS 舞台分属不同进程（localStorage 不互通），舞台操控
+        指令经服务端转发：仅发 sender 之外的同账号导播连接（每个导播只控
+        自己的舞台；改派后其他账号的残留连接不收）；发送失败的半开/已断
+        连接照 ``broadcast_match`` 清理。
+        """
+        store = self.registry.get(sender.match_id)
+        if store is None:
+            return
+        payload = msg.model_dump_json()
+        dead: list[Connection] = []
+        for conn in store.directors:
+            if conn is sender or conn.account_id != sender.account_id:
+                continue
+            try:
+                await conn.websocket.send_text(payload)
+            except Exception:
+                dead.append(conn)
+                self.logger.debug("定向广播发送失败，清理该连接。", exc_info=True)
         for conn in dead:
             self._remove_connection(store, conn)
 
