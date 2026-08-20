@@ -26,6 +26,7 @@ from .databases import (
     SystemEvents,
     Tournaments,
 )
+from .datatypes import DEFAULT_TOURNAMENT_ID, Tournament, TournamentFormat
 
 
 class DBController:
@@ -86,6 +87,30 @@ class DBController:
         )
         self.fixtures.collection.create_index([("tournament_id", 1), ("status", 1)])
         self.fixtures.collection.create_index("match_id")
+
+    def ensure_default_tournament(self) -> None:
+        """确保默认赛事存在（固定主键，幂等），并回填存量孤立比赛。
+
+        默认赛事是所有不经赛程直接创建的比赛的归属容器：不允许删除/修改、
+        永不结束（format 仅占位，生成赛程端点已对其禁用）。
+        存量 ``tournament_id=None`` 的比赛统一回填到默认赛事。
+        """
+        if self.tournaments.get(DEFAULT_TOURNAMENT_ID) is None:
+            self.tournaments.insert(
+                Tournament(
+                    id=DEFAULT_TOURNAMENT_ID,
+                    name="默认赛事",
+                    format=TournamentFormat.SINGLE_ELIM,
+                    created_by="system",
+                )
+            )
+            self.logger.info("默认赛事已创建 (id=%s)。", DEFAULT_TOURNAMENT_ID)
+        # Python 侧过滤 None（避免 Mongo 字段缺失 vs null 歧义，兼容 mongomock）
+        for m in self.matches.find():
+            if m.tournament_id is None:
+                self.matches.update_fields(
+                    m.id, {"tournament_id": DEFAULT_TOURNAMENT_ID}
+                )
 
     def ping(self) -> bool:
         """探测数据库连通性。"""

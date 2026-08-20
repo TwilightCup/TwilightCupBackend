@@ -74,6 +74,12 @@ def create_app(db: DBController | None = None) -> FastAPI:
                     "ensure_indexes 失败（Mongo 可能未就绪）。", exc_info=True
                 )
             try:
+                ctl.ensure_default_tournament()
+            except Exception:
+                logger.warning(
+                    "默认赛事 seed 失败（Mongo 可能未就绪）。", exc_info=True
+                )
+            try:
                 storage.ensure_bucket()
             except Exception:
                 logger.warning(

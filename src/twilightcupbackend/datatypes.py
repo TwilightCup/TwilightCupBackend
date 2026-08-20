@@ -391,7 +391,8 @@ class Match(Document):
     # 归档时刻（NULL=未归档）。纯管理端列表整理标记，与状态机正交：
     # 不影响 MatchStatus / match_log / fixture 推进 / 选手占用等任何逻辑。
     archived_at: datetime | None = None
-    # 赛事归属（可选；非赛事对决为 None）。赛程引擎据此关联回 Fixture。
+    # 赛事归属（孤立比赛统一挂默认赛事 DEFAULT_TOURNAMENT_ID）。赛程引擎据此
+    # 关联回 Fixture；存量 None 由启动 seed（ensure_default_tournament）回填。
     tournament_id: str | None = None
     fixture_id: str | None = None
 
@@ -525,6 +526,11 @@ class TournamentStanding(BaseModel):
     eliminated_round: int | None = None  # 淘汰赛第几轮出局（None=冠军）
     buchholz: float | None = None  # 瑞士轮破平：对手积分和
     note: str | None = None  # 备注，如「冠军」「亚军」
+
+
+# 默认赛事（孤立比赛容器）的固定主键：所有不经赛程直接创建的比赛都挂它名下。
+# 不允许删除/修改/生成赛程，也永不结束（孤立比赛无 fixture，结束钩子不推进）。
+DEFAULT_TOURNAMENT_ID = "default"
 
 
 class Tournament(Document):

@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, status
 from ..auth import require_admin
 from ..controllers import DBController, player_running_conflict
 from ..datatypes import (
+    DEFAULT_TOURNAMENT_ID,
     Account,
     AccountType,
     Mappool,
@@ -45,7 +46,8 @@ class MatchController(Routable):
         summary="创建比赛",
         description="管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、"
         "指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，"
-        "服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。",
+        "服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。"
+        "直接创建的比赛统一挂默认赛事（孤立比赛容器）。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "需要管理员权限"},
@@ -70,6 +72,9 @@ class MatchController(Routable):
 
         mappool = self._resolve_mappool(body)
 
+        # 直接创建的比赛（不经赛程）统一挂默认赛事；兜底确保其存在
+        # （正常由启动 seed 创建，此处防 seed 失败/测试未走 lifespan）。
+        self.db.ensure_default_tournament()
         match = Match(
             name=body.name,
             bo_format=body.bo_format,
@@ -84,6 +89,7 @@ class MatchController(Routable):
             player_b_id=player_b.id,
             referee_id=referee.id,
             director_id=director.id,
+            tournament_id=DEFAULT_TOURNAMENT_ID,
         )
         # 指定选手不得已在另一场 RUNNING 会话中（§6）
         conflict = player_running_conflict(

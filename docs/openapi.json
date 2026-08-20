@@ -431,7 +431,7 @@
           "matches"
         ],
         "summary": "创建比赛",
-        "description": "管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。",
+        "description": "管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。直接创建的比赛统一挂默认赛事（孤立比赛容器）。",
         "operationId": "create_admin_matches_post",
         "requestBody": {
           "content": {
@@ -1227,7 +1227,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1292,7 +1292,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1357,7 +1357,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1638,7 +1638,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "状态不符 / 选手不足 / 该赛制暂未实现"
+            "description": "状态不符 / 默认赛事 / 选手不足 / 该赛制暂未实现"
           },
           "503": {
             "description": "赛程引擎未就绪"
@@ -1825,7 +1825,7 @@
           "tournaments"
         ],
         "summary": "删除赛事",
-        "description": "仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）。",
+        "description": "仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）；默认赛事（孤立比赛容器）不可删除。",
         "operationId": "remove_admin_tournaments__tournament_id__delete",
         "parameters": [
           {
@@ -1852,7 +1852,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态"
+            "description": "非 DRAFT 状态 / 默认赛事"
           },
           "422": {
             "description": "Validation Error",
@@ -1915,7 +1915,7 @@
             "description": "赛事/图池不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 分数非法"
+            "description": "非 DRAFT 状态 / 默认赛事 / 分数非法"
           },
           "422": {
             "description": "Validation Error",
@@ -2036,7 +2036,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -2101,7 +2101,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 长度不符 / 含非池内 id / 存在重复"
+            "description": "非 DRAFT 状态 / 默认赛事 / 长度不符 / 非池内 id / 重复"
           },
           "422": {
             "description": "Validation Error",
@@ -2156,7 +2156,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非瑞士轮 / 上一轮未完成 / 超过总轮数"
+            "description": "非瑞士轮 / 默认赛事 / 上一轮未完成 / 超过总轮数"
           },
           "422": {
             "description": "Validation Error",
