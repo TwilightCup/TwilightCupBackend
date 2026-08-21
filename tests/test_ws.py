@@ -30,10 +30,14 @@ def test_chat_broadcast_to_all(world) -> None:  # type: ignore[no-untyped-def]
         _drain(ws_a, 5)  # auth_ok / ready_state / phase_change
         with client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b:
             _drain(ws_b, 5)
-            # B 连入对 A 产生一条 seat_state(PLAYER_B, online) 广播
+            # B 连入对 A 产生 seat_state(PLAYER_B, online) + system(seat) 广播
             _recv_until(
                 ws_a,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_B",
+            )
+            _recv_until(
+                ws_a,
+                lambda m: m["type"] == "system" and m["kind"] == "seat",
             )
             ws_a.send_json({"type": "chat", "text": "你好"})
             echo_a = ws_a.receive_json()
@@ -80,9 +84,10 @@ def test_chat_persisted(world) -> None:  # type: ignore[no-untyped-def]
         ws_a.send_json({"type": "chat", "text": "留存"})
         ws_a.receive_json()  # 收到自己的回声
     msgs = db.chat_messages.find_by_match(session.id)
-    assert len(msgs) == 1
-    assert msgs[0].text == "留存"
-    assert msgs[0].is_system is False
+    user_msgs = [m for m in msgs if not m.is_system]
+    assert len(user_msgs) == 1
+    assert user_msgs[0].text == "留存"
+    assert user_msgs[0].is_system is False
 
 
 def test_draft_sync_broadcast_to_director(world) -> None:  # type: ignore[no-untyped-def]

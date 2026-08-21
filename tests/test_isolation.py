@@ -121,5 +121,6 @@ def test_two_sessions_chat_persisted_separately(world) -> None:  # type: ignore[
 
     s1_msgs = db.chat_messages.find_by_match(session1.id)
     s2_msgs = db.chat_messages.find_by_match(session2.id)
-    assert [m.text for m in s1_msgs] == ["s1-msg"]
-    assert [m.text for m in s2_msgs] == ["s2-msg"]
+    # 座席连接提示以系统消息落库；聊天隔离断言只看用户消息。
+    assert [m.text for m in s1_msgs if not m.is_system] == ["s1-msg"]
+    assert [m.text for m in s2_msgs if not m.is_system] == ["s2-msg"]

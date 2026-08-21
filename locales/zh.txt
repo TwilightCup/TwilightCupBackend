@@ -40,6 +40,10 @@ error.wrong_seat = 仅 {seat} 可执行此操作
 error.players_only = 仅选手可执行此操作
 error.unimplemented = 暂未实现的消息类型：{type}
 
+# --- 座席连接状态（seat_state 广播之外的显式提示）---
+seat.online = {name}（{seat}）已连接
+seat.offline = {name}（{seat}）已断开连接
+
 # --- 暂停/恢复 ---
 pause.message = 比赛已暂停
 resume.message = 比赛已恢复
