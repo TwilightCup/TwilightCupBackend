@@ -41,9 +41,10 @@ def test_lang_switch_changes_messages(world) -> None:  # type: ignore[no-untyped
         msg = ws_r.receive_json()
         assert msg["type"] == "system" and "裁判 掷出" in msg["text"]
 
-        # 选手后连（5 条初始化 + 裁判侧无其积压）；其 !timer 的 SrvError 随比赛语言
+        # 选手后连（5 条初始化；裁判侧收到 seat_state + kind=seat 系统提示）；
+        # 其 !timer 的 SrvError 随比赛语言
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-            _drain(ws_r, 1)  # 选手上线 seat_state 广播
+            _drain(ws_r, 2)  # 选手上线：seat_state + system(seat)
             _drain(ws_a, 5)
             ws_a.send_json({"type": "chat", "text": "!timer 30"})
             _skip_echo(ws_a)
@@ -52,8 +53,8 @@ def test_lang_switch_changes_messages(world) -> None:  # type: ignore[no-untyped
             assert msg["msg"] == "仅裁判可使用 !timer"
             _skip_echo(ws_r)  # 裁判收到该命令的聊天中转（error 只单播给选手）
 
-        # 切回英文（选手退出产生一条下线 seat_state 需先消费）
-        _drain(ws_r, 1)
+        # 切回英文（选手退出产生 seat_state + system(seat) 需先消费）
+        _drain(ws_r, 2)
         ws_r.send_json({"type": "chat", "text": "!lang en"})
         _skip_echo(ws_r)
         msg = ws_r.receive_json()

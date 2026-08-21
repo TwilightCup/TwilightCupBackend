@@ -34,10 +34,15 @@ def test_player_connect_broadcasts_online(world) -> None:  # type: ignore[no-unt
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
             )
             assert m["online"] is True
+            notice = _recv_until(
+                ws_r,
+                lambda m: m["type"] == "system" and m["kind"] == "seat",
+            )
+            assert "connected" in notice["text"]
 
 
 def test_player_disconnect_broadcasts_offline(world) -> None:  # type: ignore[no-untyped-def]
-    """验收 1/3：选手断开 → 裁判端收到 online=false。"""
+    """验收 1/3：选手断开 → 裁判端收到 online=false + 显式 system 提示。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
@@ -53,6 +58,11 @@ def test_player_disconnect_broadcasts_offline(world) -> None:  # type: ignore[no
             lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
         )
         assert m["online"] is False
+        notice = _recv_until(
+            ws_r,
+            lambda m: m["type"] == "system" and m["kind"] == "seat",
+        )
+        assert "disconnected" in notice["text"]
 
 
 def test_init_sequence_resends_full_presence(world) -> None:  # type: ignore[no-untyped-def]

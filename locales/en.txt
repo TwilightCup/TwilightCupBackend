@@ -39,6 +39,10 @@ error.wrong_seat = Only {seat} can do this
 error.players_only = Only players can do this
 error.unimplemented = Unimplemented message type: {type}
 
+# --- Seat connection state (explicit notice on top of seat_state broadcasts) ---
+seat.online = {name} ({seat}) connected
+seat.offline = {name} ({seat}) disconnected
+
 # --- Pause / resume ---
 pause.message = Match paused
 resume.message = Match resumed
