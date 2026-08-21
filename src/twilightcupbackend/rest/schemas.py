@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,10 +28,20 @@ from ..datatypes import (
     TournamentStatus,
 )
 
+# 登录端标识 → 需具备的账号角色（auth_controller 据此校验）
+LoginEndpoint = Literal["admin", "referee", "director", "player"]
+
 
 class LoginRequest(BaseModel):
     username: str = Field(description="登录用户名")
     password: str = Field(description="口令明文（服务端仅存哈希）")
+    endpoint: LoginEndpoint | None = Field(
+        default=None,
+        description="登录端（可选，旧客户端不传）：校验账号 roles 含对应角色"
+        "（admin→ADMIN/referee→REFEREE/director→DIRECTOR/player→PLAYER），"
+        "无该角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌；不传/null 时"
+        "不做角色校验，行为与旧版完全一致。",
+    )
 
 
 class TokenResponse(BaseModel):

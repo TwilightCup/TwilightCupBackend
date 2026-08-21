@@ -37,7 +37,7 @@
           "auth"
         ],
         "summary": "登录签发令牌",
-        "description": "用用户名+口令换取 JWT 令牌，REST 与 WebSocket 均以该令牌鉴权。",
+        "description": "用用户名+口令换取 JWT 令牌，REST 与 WebSocket 均以该令牌鉴权。可选 endpoint 指定登录端（admin/referee/director/player）：账号无对应角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌（防蹭登录，已持有令牌不受影响）；不传时行为与旧版完全一致。失败错误体带稳定 code 字段：INVALID_CREDENTIALS（账密错误）/ ENDPOINT_FORBIDDEN（无该端权限）。",
         "operationId": "login_auth_login_post",
         "requestBody": {
           "content": {
@@ -61,7 +61,10 @@
             }
           },
           "401": {
-            "description": "用户名或密码错误"
+            "description": "用户名或密码错误（INVALID_CREDENTIALS）"
+          },
+          "403": {
+            "description": "无该端权限（ENDPOINT_FORBIDDEN）"
           },
           "422": {
             "description": "Validation Error",
@@ -2466,7 +2469,7 @@
           "me"
         ],
         "summary": "查看赛事对阵树（赛事成员）",
-        "description": "选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。门控：须为该赛事参赛/裁判/导播/管理员。",
+        "description": "选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。门控：须为该赛事参赛/裁判/导播/管理员；默认赛事按「参与过其名下任意比赛」判定（成员池恒空）。",
         "operationId": "tournament_bracket_me_tournaments__tournament_id__bracket_get",
         "parameters": [
           {
@@ -2518,7 +2521,7 @@
           "me"
         ],
         "summary": "查看赛事图池（赛事成员）",
-        "description": "赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池（含 logo_url）；优先取第一场已生成比赛的图池。",
+        "description": "赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池（含 logo_url）；优先取第一场已生成比赛的图池。默认赛事按「参与过其名下任意比赛」判定成员，但其无 fixture，恒 404 无图池。",
         "operationId": "tournament_mappool_me_tournaments__tournament_id__mappool_get",
         "parameters": [
           {
@@ -3812,6 +3815,24 @@
             "type": "string",
             "title": "Password",
             "description": "口令明文（服务端仅存哈希）"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "admin",
+                  "referee",
+                  "director",
+                  "player"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint",
+            "description": "登录端（可选，旧客户端不传）：校验账号 roles 含对应角色（admin→ADMIN/referee→REFEREE/director→DIRECTOR/player→PLAYER），无该角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌；不传/null 时不做角色校验，行为与旧版完全一致。"
           }
         },
         "type": "object",

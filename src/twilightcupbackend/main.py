@@ -127,9 +127,15 @@ def create_app(db: DBController | None = None) -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         # 错误体约定 {"msg": ...}：前端 extractMsg 读 msg 最稳（亦兼容旧 detail）。
+        # CodedHTTPException 额外携带稳定字符串 code（如登录的
+        # ENDPOINT_FORBIDDEN），前端可按 code 分支/i18n；普通异常无 code 字段。
         detail = exc.detail
         msg = detail if isinstance(detail, str) else "请求有误"
-        return JSONResponse(status_code=exc.status_code, content={"msg": msg})
+        body: dict[str, str] = {"msg": msg}
+        code = getattr(exc, "code", None)
+        if isinstance(code, str):
+            body["code"] = code
+        return JSONResponse(status_code=exc.status_code, content=body)
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
