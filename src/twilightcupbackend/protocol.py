@@ -186,14 +186,22 @@ class ClientDirectorCommand(BaseModel):
     switch_scene: {"scene": "soon"}（SceneKey 字符串）；
     soon_start: {}（从 paused 恢复或首次启动）；soon_pause: {}（暂停倒计时）；
     soon_reset: {}（重置为 idle）；
-    soon_set_target: {"target_ms": 300000}（改目标毫秒数）。
+    soon_set_target: {"target_ms": 300000}（改目标毫秒数）；
+    config_update: {"config": {...}}（直播配置实时下发：rtmpA/rtmpB/hlsA/
+    hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
+    服务端不校验、原样透传，与其余 action 的宽松口径一致）。
     """
 
     model_config = _cfg
     type: Literal["director_command"] = "director_command"
     # 指令类别
     action: Literal[
-        "switch_scene", "soon_start", "soon_pause", "soon_reset", "soon_set_target"
+        "switch_scene",
+        "soon_start",
+        "soon_pause",
+        "soon_reset",
+        "soon_set_target",
+        "config_update",
     ]
     # 指令载荷（见类 docstring）
     payload: dict[str, Any] = Field(default_factory=dict)

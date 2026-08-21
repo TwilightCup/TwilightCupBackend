@@ -112,3 +112,66 @@ def test_director_command_not_cross_account(world) -> None:  # type: ignore[no-u
                     break
             else:
                 raise AssertionError("旧导播未收到序标聊天")
+
+
+def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-untyped-def]
+    """config_update：直播配置实时下发 → 舞台原样收；选手/裁判/发送方收不到。
+
+    payload 结构与其余 action 口径一致：服务端不校验 config 形状，原样透传。
+    """
+    client, _, _, tokens = world
+    config = {
+        "rtmpA": "rtmp://a/live",
+        "rtmpB": "rtmp://b/live",
+        "hlsA": "http://a/hls.m3u8",
+        "hlsB": "http://b/hls.m3u8",
+        "pbA": "pb-a",
+        "pbB": "pb-b",
+        "histA": "3胜2负",
+        "histB": "2胜3负",
+    }
+    with (
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_ref,
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
+    ):
+        _drain(ws_pa, 5)
+        _drain(ws_ref, 5)
+        _drain(ws_console, 5)
+        _drain(ws_stage, 5)
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "config_update",
+                "payload": {"config": config},
+            }
+        )
+        assert ws_stage.receive_json() == {
+            "type": "director_cmd",
+            "action": "config_update",
+            "payload": {"config": config},
+        }
+        # 非法 config（非对象）与其余 action 口径一致：不校验、原样透传
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "config_update",
+                "payload": {"config": "oops"},
+            }
+        )
+        assert ws_stage.receive_json() == {
+            "type": "director_cmd",
+            "action": "config_update",
+            "payload": {"config": "oops"},
+        }
+        # 选手/裁判/发送方均收不到：以全员聊天作序标，此前不得出现 director_cmd
+        ws_pa.send_json({"type": "chat", "text": "marker"})
+        for ws in (ws_pa, ws_ref, ws_console):
+            for _ in range(10):
+                m = ws.receive_json()
+                assert m["type"] != "director_cmd"
+                if m.get("type") == "chat" and m.get("text") == "marker":
+                    break
+            else:
+                raise AssertionError("未收到序标聊天")

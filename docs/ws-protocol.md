@@ -282,11 +282,11 @@
 
 - type：'director_command'
 
-- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）与 Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。
+- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）与直播配置实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、原样透传）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 是 | — |  |
+| `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 'config_update' | 是 | — |  |
 | `payload` | dict[str, Any] | 否 | <dict> |  |
 
 ### `ClientHeartbeat`

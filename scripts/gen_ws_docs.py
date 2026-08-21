@@ -58,10 +58,12 @@ DESCRIPTIONS: dict[str, str] = {
     "ClientCounterReset": "裁判停止当前倒计时器（由 ``!timer reset`` 触发）。",
     "ClientDirectorSubscribe": "导播订阅（占位，导播连接天然只读）。",
     "ClientDirectorCommand": "导播控制台发往同账号其他导播连接（OBS 舞台）的操控"
-    '指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）与 Coming '
+    '指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming '
     "Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/"
-    '``soon_set_target``，set_target payload ``{"target_ms": ...}``）。'
-    "服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。",
+    '``soon_set_target``，set_target payload ``{"target_ms": ...}``）与直播配置'
+    '实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键'
+    "rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、"
+    "原样透传）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。",
     "ClientHeartbeat": "心跳保活（导播亦可用）。",
     "ClientDraftSync": "裁判上报 ban/pick 草稿（前端权威，后端存储+转发）",
     # 服务端 -> 客户端
