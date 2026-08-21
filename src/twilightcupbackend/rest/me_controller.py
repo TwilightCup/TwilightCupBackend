@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from ..auth import get_current_account, hash_password, verify_password
 from ..controllers import DBController, player_running_conflict
 from ..datatypes import (
+    DEFAULT_TOURNAMENT_ID,
     Account,
     AccountType,
     MatchStatus,
@@ -265,8 +266,19 @@ class MeController(Routable):
             TournamentOut.from_tournament(t) for t in self._my_tournaments(account.id)
         ]
 
+    def _is_default_tournament_member(self, account: Account) -> bool:
+        """默认赛事（孤立比赛容器）无成员池，按「参与过其名下任意一场比赛
+        （选手/裁判/导播任一角色）」判定成员资格。"""
+        return any(
+            m.tournament_id == DEFAULT_TOURNAMENT_ID
+            for m in self.db.matches.find_by_member(account.id)
+        )
+
     def _require_tournament_member(self, tournament_id: str, account: Account) -> None:
-        """门控：账号须是该赛事的参赛选手/裁判/导播/管理员。"""
+        """门控：账号须是该赛事的参赛选手/裁判/导播/管理员。
+
+        默认赛事成员池恒空，改按比赛参与关系判定（见 _is_default_tournament_member）。
+        """
         t = self.db.tournaments.get(tournament_id)
         if t is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "赛事不存在")
@@ -275,6 +287,10 @@ class MeController(Routable):
             or account.id in t.referee_ids
             or account.id in t.director_ids
             or AccountType.ADMIN in account.roles
+            or (
+                t.id == DEFAULT_TOURNAMENT_ID
+                and self._is_default_tournament_member(account)
+            )
         )
         if not is_member:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "非该赛事成员")
@@ -284,7 +300,8 @@ class MeController(Routable):
         response_model=BracketView,
         summary="查看赛事对阵树（赛事成员）",
         description="选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。"
-        "门控：须为该赛事参赛/裁判/导播/管理员。",
+        "门控：须为该赛事参赛/裁判/导播/管理员；默认赛事按「参与过其名下"
+        "任意比赛」判定（成员池恒空）。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "非该赛事成员"},
@@ -307,7 +324,8 @@ class MeController(Routable):
         response_model=MappoolOut,
         summary="查看赛事图池（赛事成员）",
         description="赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池"
-        "（含 logo_url）；优先取第一场已生成比赛的图池。",
+        "（含 logo_url）；优先取第一场已生成比赛的图池。默认赛事按「参与过"
+        "其名下任意比赛」判定成员，但其无 fixture，恒 404 无图池。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "非该赛事成员"},

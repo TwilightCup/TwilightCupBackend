@@ -66,6 +66,15 @@ def env() -> SimpleNamespace:
                 display_name=f"选手{i}",
             )
         )
+    # 与任何比赛无关的旁观账号（门控 403 用）
+    db.accounts.insert(
+        Account(
+            username="other",
+            password_hash=hash_password("p"),
+            roles=[AccountType.PLAYER],
+            display_name="无关选手",
+        )
+    )
     db.accounts.insert(
         Account(
             username="ref",
@@ -206,3 +215,30 @@ def test_backfill_legacy_standalone_matches(env: SimpleNamespace) -> None:
     m = env.db.matches.get(legacy.id)
     assert m is not None
     assert m.tournament_id == DEFAULT_TOURNAMENT_ID
+
+
+def _login(env: SimpleNamespace, username: str) -> str:
+    return env.client.post(
+        "/auth/login", json={"username": username, "password": "p"}
+    ).json()["access_token"]
+
+
+def test_default_tournament_member_gate_by_match_role(env: SimpleNamespace) -> None:
+    """默认赛事成员门控按比赛参与关系判定：比赛级选手/裁判/导播放行，无关账号 403。"""
+    url = f"/me/tournaments/{DEFAULT_TOURNAMENT_ID}/bracket"
+    env.db.ensure_default_tournament()
+    # 尚无任何孤立比赛 → 参与者也是非成员
+    dri_h = {"Authorization": f"Bearer {_login(env, 'dri')}"}
+    assert env.client.get(url, headers=dri_h).status_code == 403
+
+    resp = env.client.post("/admin/matches", json=_match_body(env), headers=_h(env))
+    assert resp.status_code == 201, resp.text
+
+    # 比赛级选手/裁判/导播均可读（空表）；无关账号仍 403
+    for username in ("p0", "ref", "dri"):
+        h = {"Authorization": f"Bearer {_login(env, username)}"}
+        resp = env.client.get(url, headers=h)
+        assert resp.status_code == 200, f"{username} → {resp.status_code}"
+        assert resp.json()["rounds"] == []
+    other_h = {"Authorization": f"Bearer {_login(env, 'other')}"}
+    assert env.client.get(url, headers=other_h).status_code == 403
