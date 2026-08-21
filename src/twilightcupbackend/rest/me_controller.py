@@ -296,6 +296,31 @@ class MeController(Routable):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "非该赛事成员")
 
     @get(
+        "/tournaments/{tournament_id}",
+        response_model=TournamentOut,
+        summary="查看赛事详情（赛事成员）",
+        description="赛事成员（选手/裁判/导播/管理员）可读赛事基本信息（名称/状态等）。"
+        "与列表端点不同，默认赛事（孤立比赛容器）不在 /me/tournaments 列表里，"
+        "但参与过其名下任意比赛的账号可经本端点读取——导播舞台 Coming Soon "
+        "场景显示赛事名/状态用。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "非该赛事成员"},
+            404: {"description": "赛事不存在"},
+        },
+    )
+    def tournament_detail(
+        self,
+        tournament_id: str,
+        account: Account = Depends(get_current_account),
+    ) -> TournamentOut:
+        self._require_tournament_member(tournament_id, account)
+        t = self.db.tournaments.get(tournament_id)
+        if t is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "赛事不存在")
+        return TournamentOut.from_tournament(t)
+
+    @get(
         "/tournaments/{tournament_id}/bracket",
         response_model=BracketView,
         summary="查看赛事对阵树（赛事成员）",

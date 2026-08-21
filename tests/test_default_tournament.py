@@ -242,3 +242,29 @@ def test_default_tournament_member_gate_by_match_role(env: SimpleNamespace) -> N
         assert resp.json()["rounds"] == []
     other_h = {"Authorization": f"Bearer {_login(env, 'other')}"}
     assert env.client.get(url, headers=other_h).status_code == 403
+
+
+def test_me_tournament_detail_includes_default(env: SimpleNamespace) -> None:
+    """GET /me/tournaments/{id}：比赛参与者可读默认赛事详情（名/状态），
+    无关账号 403、不存在 404。默认赛事不在 /me/tournaments 列表里，
+    导播舞台 Coming Soon 场景靠本端点取赛事名/状态。"""
+    # 尚无比赛 → 导播非成员 403
+    env.db.ensure_default_tournament()
+    url = f"/me/tournaments/{DEFAULT_TOURNAMENT_ID}"
+    dri_h = {"Authorization": f"Bearer {_login(env, 'dri')}"}
+    assert env.client.get(url, headers=dri_h).status_code == 403
+
+    resp = env.client.post("/admin/matches", json=_match_body(env), headers=_h(env))
+    assert resp.status_code == 201, resp.text
+
+    resp = env.client.get(url, headers=dri_h)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == DEFAULT_TOURNAMENT_ID
+    assert body["name"] == "默认赛事"
+    assert body["status"] == TournamentStatus.DRAFT
+
+    # 无关账号 403；不存在 404
+    other_h = {"Authorization": f"Bearer {_login(env, 'other')}"}
+    assert env.client.get(url, headers=other_h).status_code == 403
+    assert env.client.get("/me/tournaments/no-such", headers=dri_h).status_code == 404
