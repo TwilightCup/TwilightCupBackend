@@ -214,8 +214,8 @@ def test_player_exclusive_takeover_no_presence_flicker(world) -> None:  # type: 
         client.websocket_connect(url) as ws_a2,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a1, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a1, 6)
+        _drain(ws_a2, 6)
         # a1 连入广播 online=true
         assert _recv_until(ws_r, _track)["online"] is True
         # 接管后的下一条 PLAYER_A seat_state 仍为 online=true（期间无 offline）

@@ -173,6 +173,13 @@ class MatchEngine:
             SystemEvent(match_id=match_id, kind=kind, payload=payload)
         )
 
+    def _username_of(self, account_id: str | None) -> str:
+        """account_id → 登录用户名（score 消息标识选手用；查不到返回空串）。"""
+        if not account_id:
+            return ""
+        acc = self.db.accounts.get(account_id)
+        return acc.username if acc else ""
+
     def save_draft_snapshot(self, store: MatchStore, snapshot: dict | None) -> None:
         """持久化 ban/pick/protect 草稿快照到 match_log（见 backend-banpick-persist）。
 
@@ -1113,6 +1120,20 @@ class MatchEngine:
                 threshold=store.match.win_threshold,
             ),
         )
+        # 比分同步一条全场系统消息（Twilight 前缀，各端逐字一致；标识用
+        # 登录用户名而非展示名）
+        await self.cm.system_message(
+            store.id,
+            self.cm.tr(
+                store.id,
+                "score.update",
+                player_a=self._username_of(store.match.player_a_id),
+                a=store.wins_a,
+                b=store.wins_b,
+                player_b=self._username_of(store.match.player_b_id),
+            ),
+            kind="score",
+        )
         # 比分达到取胜分数 → 立即自动结束（广播 match_end/系统消息、踢选手、
         # 推进赛程）；未达阈值才进入 ROUND_END 等待下一回合。
         winner = self._decided_winner(store)
@@ -1249,6 +1270,20 @@ class MatchEngine:
                 threshold=store.match.win_threshold if store else 1,
             ),
         )
+        # 改判后比分变化 → 同步全场系统消息（与 _apply_verdict 一致）
+        if store is not None:
+            await self.cm.system_message(
+                match_id,
+                self.cm.tr(
+                    match_id,
+                    "score.update",
+                    player_a=self._username_of(store.match.player_a_id),
+                    a=wins_a,
+                    b=wins_b,
+                    player_b=self._username_of(store.match.player_b_id),
+                ),
+                kind="score",
+            )
 
     async def _recompute_score(self, match_id: str) -> None:
         store = self.cm.registry.get(match_id)

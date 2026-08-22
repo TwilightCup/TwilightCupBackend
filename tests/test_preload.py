@@ -338,8 +338,9 @@ def test_reconnect_replays_pick_announced(world) -> None:  # type: ignore[no-unt
         _drain(ws_r, 3)
         _select(ws_r, "ML1")
         with client.websocket_connect(f"/ws/{tokens['pa']}?cap={CAP}") as ws_a:
-            # 握手 7 条：auth/ready/phase/pick_announced/preload_state/seat×2
-            _drain(ws_a, 7)
+            # 握手 9 条：auth/ready/phase/pick_announced/preload_state/
+            # 选图 System 提示/seat×2/本人上线 system 提示
+            _drain(ws_a, 9)
             _report(ws_a, "in_progress")
             _recv_until(ws_a, _preload_is("a_status", "in_progress"))
         # with 退出 = 断线；重连后 phase_change 之外应补发 pick_announced 与快照

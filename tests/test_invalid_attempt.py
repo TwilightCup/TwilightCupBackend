@@ -175,7 +175,7 @@ def test_reconnect_resync_carries_invalid(world) -> None:  # type: ignore[no-unt
     # 断线后重连 + 补传（幂等：同 index 重复上报仍是 INVALID、原因随记录走）
     tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
     with client.websocket_connect(f"/ws/{tok_a}") as ws_a2:
-        _drain(ws_a2, 5)
+        _drain(ws_a2, 6)
         ws_a2.send_json({"type": "reconnect_resync", "round_id": rid})
         snapshot = _own_status(ws_a2, "PLAYER_A")
         a0 = _attempt_of(snapshot, 0)

@@ -232,7 +232,7 @@ def test_ct_tag_count_three_allows_three(world) -> None:  # type: ignore[no-unty
         client.websocket_connect(f"/ws/{tok_a}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rs = _drive_to_round_start(
             ws_r, ws_a, "CT01", ["Glitchless", "Pinch", "No EC"], retry=1
         )

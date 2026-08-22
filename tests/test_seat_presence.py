@@ -28,7 +28,7 @@ def test_player_connect_broadcasts_online(world) -> None:  # type: ignore[no-unt
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)  # auth_ok / ready_state / phase_change / seat_state ×2
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-            _drain(ws_a, 5)
+            _drain(ws_a, 6)
             m = _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
@@ -47,7 +47,7 @@ def test_player_disconnect_broadcasts_offline(world) -> None:  # type: ignore[no
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-            _drain(ws_a, 5)
+            _drain(ws_a, 6)
             _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
@@ -69,7 +69,7 @@ def test_init_sequence_resends_full_presence(world) -> None:  # type: ignore[no-
     """验收 4：新连接初始化序列补发双方在线全量状态。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         # 裁判此时连入：A 在线 / B 离线，补发给裁判
         with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
             states = {
@@ -86,7 +86,7 @@ def test_referee_reconnect_gets_current_presence(world) -> None:  # type: ignore
     """验收 4（裁判端刷新重连）：A 先连后断，裁判再连 → 补发 A=offline。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
     # A 已断开。裁判此刻连入，补发的全量状态应反映 A 离线
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         m = _recv_until(
@@ -103,14 +103,14 @@ def test_reconnect_no_flicker(world) -> None:  # type: ignore[no-untyped-def]
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a1:
-            _drain(ws_a1, 5)
+            _drain(ws_a1, 6)
             _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
             )
             # 顶号重连：旧连接被替换，新连接落定后才广播（net online）
             with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a2:
-                _drain(ws_a2, 5)
+                _drain(ws_a2, 6)
                 m = _recv_until(
                     ws_r,
                     lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",

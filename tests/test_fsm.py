@@ -49,7 +49,7 @@ def test_manual_start_reaches_round(world) -> None:  # type: ignore[no-untyped-d
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         ws_r.send_json({"type": "referee_mark_prep"})
         _drain(ws_r, 2)  # phase_change + system
         ws_r.send_json({"type": "referee_select_pick", "pick_code": "ML1"})

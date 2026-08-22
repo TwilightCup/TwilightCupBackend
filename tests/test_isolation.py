@@ -63,8 +63,8 @@ def test_sessions_isolated(world) -> None:  # type: ignore[no-untyped-def]
         client.websocket_connect(f"/ws/{tokens1['pa']}") as ws_a1,
         client.websocket_connect(f"/ws/{tok2['pa']}") as ws_a2,
     ):
-        _drain(ws_a1, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a1, 6)
+        _drain(ws_a2, 6)
         # 比赛1 的选手发言
         ws_a1.send_json({"type": "chat", "text": "in-session-1"})
         echo1 = ws_a1.receive_json()
@@ -112,8 +112,8 @@ def test_two_sessions_chat_persisted_separately(world) -> None:  # type: ignore[
         client.websocket_connect(f"/ws/{tokens1['pa']}") as ws_a1,
         client.websocket_connect(f"/ws/{issue_token(pa2, settings)}") as ws_a2,
     ):
-        _drain(ws_a1, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a1, 6)
+        _drain(ws_a2, 6)
         ws_a1.send_json({"type": "chat", "text": "s1-msg"})
         ws_a1.receive_json()
         ws_a2.send_json({"type": "chat", "text": "s2-msg"})

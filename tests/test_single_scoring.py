@@ -219,7 +219,7 @@ def test_rematch_preserves_single_scoring(world) -> None:  # type: ignore[no-unt
         # 仅 A 在场：用 B 令牌补一条连接完成回合，凑齐双方终态进入判定
         tok_b = issue_token(db.accounts.get(session.player_b_id), settings)
         with client.websocket_connect(f"/ws/{tok_b}") as ws_b:
-            _drain(ws_b, 5)
+            _drain(ws_b, 6)
             _complete(ws_b, rid)
             _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
             ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 3})

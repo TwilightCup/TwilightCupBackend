@@ -33,7 +33,7 @@ def test_director_command_relayed_to_stage(world) -> None:  # type: ignore[no-un
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
     ):
-        _drain(ws_pa, 5)
+        _drain(ws_pa, 6)
         _drain(ws_console, 5)
         _drain(ws_stage, 5)
         ws_console.send_json(
@@ -101,7 +101,7 @@ def test_director_command_not_cross_account(world) -> None:  # type: ignore[no-u
             client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
         ):
             _drain(ws_new, 5)
-            _drain(ws_pa, 5)
+            _drain(ws_pa, 6)
             ws_new.send_json({"type": "director_command", "action": "soon_start"})
             # 用一条全员聊天作序标：旧导播在收到它之前不得出现 director_cmd
             ws_pa.send_json({"type": "chat", "text": "marker"})
@@ -136,7 +136,7 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
     ):
-        _drain(ws_pa, 5)
+        _drain(ws_pa, 6)
         _drain(ws_ref, 5)
         _drain(ws_console, 5)
         _drain(ws_stage, 5)

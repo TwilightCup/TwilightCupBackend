@@ -45,7 +45,7 @@ def test_lang_switch_changes_messages(world) -> None:  # type: ignore[no-untyped
         # 其 !timer 的 SrvError 随比赛语言
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
             _drain(ws_r, 2)  # 选手上线：seat_state + system(seat)
-            _drain(ws_a, 5)
+            _drain(ws_a, 6)
             ws_a.send_json({"type": "chat", "text": "!timer 30"})
             _skip_echo(ws_a)
             msg = ws_a.receive_json()
@@ -82,7 +82,7 @@ def test_lang_referee_only(world) -> None:  # type: ignore[no-untyped-def]
     """非裁判用 !lang 被拒（SrvError 403）。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws:
-        _drain(ws, 5)
+        _drain(ws, 6)  # auth/ready/phase/seat×2 + 本人上线 system 提示
         ws.send_json({"type": "chat", "text": "!lang zh"})
         _skip_echo(ws)
         msg = ws.receive_json()

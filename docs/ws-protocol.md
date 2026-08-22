@@ -9,7 +9,7 @@
 - 可选 ?match=ID 连到指定比赛（裁判/导播多标签页选场）。
 - 可选 ?cap=（逗号分隔的能力声明，如 `preload1`=会上报预载状态）；预载开局门控只对声明了能力的席位生效。
 - 可选 ?exclusive=1 要求独占身份 key（账号+座位+比赛）：同 key 既有连接先收 `displaced` 再被 close(4001) 顶掉，新连接照常 auth_ok + 快照；被顶掉连接的在途消息一律忽略。key 含 match，故裁判不同场多标签、多角色多座位互不影响；导播 OBS 多源不带 exclusive 仍并存（裁判端/选手端用，导播各场景页不用）。
-- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发 `preload_state` 快照。
+- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发 `preload_state` 快照；选手席另收仅其可见的 System 前缀定向提示：当前选图（有选图时）与未就绪时的 prep 提示。选手连入时向全员（含本人）广播 `seat.online` 系统消息（广播 system 消息 = Twilight 前缀，各端逐字一致）。
 - 导播连接只读：除 `director_subscribe`/`heartbeat`/`director_command` 外入站一律拒绝；`director_command` 仅定向转发给同账号其他导播连接（OBS 舞台），不影响比赛状态。
 - 多角色账号可开多条连接（不同 seat 各一条）；同 seat 重连替换旧连接（不带 exclusive 时为静默替换，关闭码 1000）。
 - 回合中发 `reconnect_resync` 取快照后幂等补传。
@@ -354,13 +354,13 @@
 
 - type：'system'
 
-- 全场广播一条系统消息（命令回执、倒计时提示、回合信息等）。sender 为聊天展示前缀：全场广播恒为 ``Twilight``（与落库 ChatMessage.sender_name 一致）；仅特定席位可见的反馈走 SrvError 定向回执，客户端沿用 ``System`` 前缀。
+- 系统消息：全场广播（命令回执、倒计时提示、回合信息等）或单席位定向提示。sender 为聊天展示前缀：广播 ``Twilight``（与落库 ChatMessage.sender_name 一致，全员逐字相同）；定向提示 ``System``（仅目标席位收到、不落库，如重连回 PREP 的补发提示）。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `text` | str | 是 | — |  |
 | `kind` | str | 否 | 'info' |  |
-| `sender` | 'Twilight' | 'System' | 否 | 'Twilight' | 展示前缀：全场广播为 Twilight |
+| `sender` | 'Twilight' | 'System' | 否 | 'Twilight' | 展示前缀：全场广播为 Twilight，单席位定向提示为 System |
 | `ts` | datetime | 否 | <now_ts> |  |
 
 ### `SrvReadyState`

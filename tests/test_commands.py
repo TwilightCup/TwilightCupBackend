@@ -29,7 +29,7 @@ def test_alert_seconds() -> None:
 def test_ready_toggle(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         ws_a.send_json({"type": "chat", "text": "!ready"})
         _skip_echo(ws_a)
         ready_msg = ws_a.receive_json()
@@ -64,7 +64,7 @@ def test_ready_only_players(world) -> None:  # type: ignore[no-untyped-def]
 def test_roll(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         ws_a.send_json({"type": "chat", "text": "!roll"})
         _skip_echo(ws_a)
         msg = ws_a.receive_json()
@@ -75,7 +75,7 @@ def test_roll(world) -> None:  # type: ignore[no-untyped-def]
 def test_unknown_command(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         ws_a.send_json({"type": "chat", "text": "!foobar"})
         _skip_echo(ws_a)
         msg = ws_a.receive_json()

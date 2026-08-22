@@ -259,26 +259,70 @@ class ConnectionManager:
         # preload_state 对所有席位补发（重连端消除陈旧态）。其他阶段不补发
         # （round_start 本就不重放，预载在 COUNTDOWN/IN_ROUND 已无意义）。
         if store.phase == MatchPhase.PREP:
-            if (
-                seat in (Seat.PLAYER_A, Seat.PLAYER_B)
-                and store.pick_announced is not None
-            ):
+            is_player = seat in (Seat.PLAYER_A, Seat.PLAYER_B)
+            if is_player and store.pick_announced is not None:
                 await self._send(conn, store.pick_announced)
+                # 当前选图同步一条定向 System 提示（仅该选手可见、不落库；
+                # 文案与 pick.selected 同构，取自冻结快照，含词条/重试）
+                pick = store.pick_announced.pick
+                tags_suffix = (
+                    f" [{', '.join(pick.tags)}]" if pick.tags else ""
+                )
+                retry_suffix = (
+                    f" x{pick.retry_count}"
+                    if pick.retry_count is not None
+                    else ""
+                )
+                await self._send(
+                    conn,
+                    SrvSystem(
+                        text=self.tr(
+                            store.id,
+                            "pick.current_hint",
+                            code=store.pick_announced.pick_code,
+                            name=pick.name,
+                            tags=tags_suffix,
+                            retry=retry_suffix,
+                        ),
+                        kind="pick",
+                        sender="System",
+                    ),
+                )
             await self._send(
                 conn,
                 SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
             )
-        # 座席在线状态广播（backend-seat-presence）：选手连入通知全员
-        # （新连接自身由下方补发覆盖，故排除，避免重复）；初始化序列末尾
-        # 给新连接补发全量在线状态（重连方消除陈旧离线态）
+            # 连入时比赛已在 PREP（重连/中途加入）：没有 live 的 prep.started
+            # 广播可看，定向补一条仅该选手可见的 System 提示（不广播、不落库）。
+            # 该席已就绪则不提示（再 !ready 会取消就绪，提示反而误导）。
+            already_ready = store.a_ready if seat == Seat.PLAYER_A else store.b_ready
+            if is_player and not already_ready:
+                await self._send(
+                    conn,
+                    SrvSystem(
+                        text=self.tr(store.id, "prep.hint"),
+                        kind="prep",
+                        sender="System",
+                    ),
+                )
+        # 初始化序列末尾给新连接补发全量在线状态（重连方消除陈旧离线态）
+        for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+            await self._send(
+                conn,
+                SrvSeatState(
+                    seat=player_seat.name, online=player_seat in store.connections
+                ),
+            )
+        # 座席在线状态广播（backend-seat-presence）：选手连入通知全员——
+        # 系统提示连本人也发（system 消息 = Twilight 前缀，各端必须逐字一致，
+        # 不排除任何在席连接）；seat_state 广播仍排除本人（上方已补发全量
+        # 快照，避免重复 UI 事件）
         if seat in (Seat.PLAYER_A, Seat.PLAYER_B):
             await self.broadcast_match(
                 store.id,
                 SrvSeatState(seat=seat.name, online=True),
                 exclude=conn,
             )
-            # 裁判/导播需要显式的连接提示，而不只是状态点（断线重连优化）。
-            # 排除新连接自身，避免改变选手端握手的既有消息条数。
             await self.system_message(
                 store.id,
                 self.tr(
@@ -288,14 +332,6 @@ class ConnectionManager:
                     seat=seat.name,
                 ),
                 kind="seat",
-                exclude=conn,
-            )
-        for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
-            await self._send(
-                conn,
-                SrvSeatState(
-                    seat=player_seat.name, online=player_seat in store.connections
-                ),
             )
         self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
         return conn
