@@ -33,6 +33,21 @@ def test_prep_and_select_pick(world) -> None:  # type: ignore[no-untyped-def]
         assert "selected" in pick_msg["text"]
 
 
+def test_select_pick_preset_retry_in_broadcast(world) -> None:  # type: ignore[no-untyped-def]
+    """非 CT/EX 单关走图池预设重试：选图广播同样带重试后缀（CP01 → x3），
+    与 pick_announced / round_start 下发的生效重试口径一致。"""
+    client, _, _, tokens = world
+    with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
+        _drain(ws_r, 5)
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 1)
+        ws_r.send_json({"type": "referee_select_pick", "pick_code": "CP01"})
+        pick_msg = _recv_until(
+            ws_r, lambda m: m["type"] == "system" and "CP01" in m["text"]
+        )
+        assert "x3" in pick_msg["text"]
+
+
 def test_select_pick_invalid(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:

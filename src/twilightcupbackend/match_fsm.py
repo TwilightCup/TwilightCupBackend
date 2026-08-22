@@ -315,7 +315,11 @@ class MatchEngine:
         # 改图（含重新应用）旧预载必然作废 → 重置并广播，再提前下发新合集
         await self._reset_preload(store)
         suffix = f" [{', '.join(tags)}]" if tags else ""
-        retry_suffix = f" x{retry_count}" if retry_count is not None else ""
+        # 重试后缀用生效值：CT/EX 单关为裁判指定值，其余单关沿用图池预设
+        # （与 _pending_pick_enriched / pick_announced 的合并口径一致；
+        # 多关 retry 恒 None 不显示）
+        effective_retry = retry_count if retry_count is not None else pick.retry_count
+        retry_suffix = f" x{effective_retry}" if effective_retry is not None else ""
         await self.cm.system_message(
             match_id,
             self.cm.tr(
