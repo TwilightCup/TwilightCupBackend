@@ -287,10 +287,20 @@ class SrvChat(BaseModel):
 
 
 class SrvSystem(BaseModel):
+    """全场广播的系统消息（命令回执、倒计时提示、回合信息等）。
+
+    仅特定席位/连接可见的反馈不走本消息（走 SrvError 定向回执），客户端
+    展示沿用 "System" 前缀；本消息的 sender 恒为 "Twilight"（赛事播报
+    人格），客户端以其为聊天展示前缀，与落库 ChatMessage.sender_name 一致。
+    """
+
     model_config = _cfg
     type: Literal["system"] = "system"
     text: str
     kind: str = "info"
+    sender: Literal["Twilight", "System"] = Field(
+        default="Twilight", description="展示前缀：全场广播为 Twilight"
+    )
     ts: datetime = Field(default_factory=now_ts)
 
 

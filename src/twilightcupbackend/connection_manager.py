@@ -701,12 +701,17 @@ class ConnectionManager:
         *,
         exclude: Connection | None = None,
     ) -> None:
-        """持久化（系统聊天日志）并广播系统消息。"""
+        """持久化（系统聊天日志）并广播系统消息。
+
+        系统消息均为全场广播，展示前缀 "Twilight"（与 SrvSystem.sender 一致，
+        客户端以 sender_name 渲染聊天前缀）；仅特定席位可见的错误回执走
+        SrvError 定向发送，不落库、客户端沿用 "System" 前缀。
+        """
         chat = ChatMessage(
             match_id=match_id,
             sender_role=ChatSenderRole.SYSTEM,
             sender_id=None,
-            sender_name="System",
+            sender_name="Twilight",
             text=text,
             is_system=True,
         )

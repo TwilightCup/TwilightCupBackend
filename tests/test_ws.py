@@ -90,6 +90,31 @@ def test_chat_persisted(world) -> None:  # type: ignore[no-untyped-def]
     assert user_msgs[0].is_system is False
 
 
+def test_system_sender_prefix(world) -> None:  # type: ignore[no-untyped-def]
+    """全场广播的 system 消息带 sender=Twilight（落库 sender_name 同步）；
+    仅触发方可见的错误回执（error）不带 sender，客户端沿用 System 前缀。"""
+    client, db, session, tokens = world
+    with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
+        _drain(ws_a, 5)
+        # !roll → 全场广播的系统回执
+        ws_a.send_json({"type": "chat", "text": "!roll"})
+        _recv_until(ws_a, lambda m: m["type"] == "chat")  # 自己的命令回声
+        sys_msg = _recv_until(
+            ws_a, lambda m: m["type"] == "system" and m["kind"] == "roll"
+        )
+        assert sys_msg["sender"] == "Twilight"
+        # !timer 仅裁判 → 定向错误回执（无 sender 字段）
+        ws_a.send_json({"type": "chat", "text": "!timer 30"})
+        _recv_until(ws_a, lambda m: m["type"] == "chat")
+        err = _recv_until(ws_a, lambda m: m["type"] == "error")
+        assert err["code"] == 403
+        assert "sender" not in err
+    msgs = db.chat_messages.find_by_match(session.id)
+    sys_rows = [m for m in msgs if m.is_system]
+    assert sys_rows  # 上线提示 / roll 回执等均已落库
+    assert all(m.sender_name == "Twilight" for m in sys_rows)
+
+
 def test_draft_sync_broadcast_to_director(world) -> None:  # type: ignore[no-untyped-def]
     """裁判上报 ban/pick 草稿状态 → 存储 + 广播给导播。"""
     client, _, _, tokens = world
