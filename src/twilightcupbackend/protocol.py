@@ -449,6 +449,10 @@ class SrvDirectorCommand(BaseModel):
 
     action/payload 原样转发自 ClientDirectorCommand；仅发 sender 之外的
     同账号导播连接（每个导播只控自己的舞台），选手/裁判不收，发送方不回执。
+    另有服务端主动下发的 action="state_sync"：DIRECTOR 连接 auth_ok 后若
+    该 (account_id, match_id) 有状态暂存，补发 payload={"scene": ...,
+    "soon": {"target_ms"/"started_at"/"paused_at"/"now_ms"（服务器毫秒）},
+    "config": {...}}，消除舞台晚开收不到状态的问题。
     """
 
     model_config = _cfg

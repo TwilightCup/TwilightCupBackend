@@ -576,7 +576,7 @@
 
 - type：'director_cmd'
 
-- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。
+- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。另含服务端主动下发的 ``state_sync``：DIRECTOR 连接 ``auth_ok`` 后若有状态暂存，补发最近的场景/倒计时/直播配置（payload ``{"scene"/"soon"/"config"}``，soon 内时间戳均为服务器毫秒、附 ``now_ms`` 供时钟校正）。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |

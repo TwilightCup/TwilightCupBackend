@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from logging import Logger, getLogger
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from .datatypes import (
     MatchPhase,
     MatchStatus,
     Seat,
+    now_ts,
 )
 from .protocol import (
     ClientAttemptSkip,
@@ -121,6 +123,27 @@ def normalize_draft(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _now_ms() -> int:
+    """当前 UTC 毫秒时间戳（state_sync 回放 payload 用）。"""
+    return int(now_ts().timestamp() * 1000)
+
+
+@dataclass
+class _DirectorState:
+    """导播操控状态暂存（state_sync 回放用）。
+
+    纯内存态、随进程重启丢失（与 director_cmd 纯推送语义一致）；倒计时
+    时间线由服务端折算：start 记起点（自暂停恢复时扣除已暂停时长），
+    pause 记暂停点，reset 清时间线但保留 target_ms。
+    """
+
+    scene: str | None = None  # 最近一次 switch_scene 的 payload.scene
+    soon_target_ms: int | None = None
+    soon_started_ms: int | None = None  # 折算后的起点（毫秒，已扣暂停）
+    soon_paused_ms: int | None = None
+    config: dict[str, Any] = field(default_factory=dict)  # config_update 覆盖合并
+
+
 class ConnectionManager:
     def __init__(
         self,
@@ -141,6 +164,10 @@ class ConnectionManager:
         self.match_engine: MatchEngine | None = None
         # M12 注入：赛程引擎（单场结束触发对阵推进）
         self.tournament_engine: TournamentEngine | None = None
+        # 导播状态暂存：key=(account_id, match_id)。每条 director_command 到达
+        # 时更新；DIRECTOR 连接 auth_ok 后按 key 回放（state_sync）。已结束/
+        # 已删除比赛不清理（内存量极小）。
+        self._director_state: dict[tuple[str, str], _DirectorState] = {}
 
     # ------------------------------------------------------------------
     # 连接生命周期
@@ -297,6 +324,16 @@ class ConnectionManager:
                     seat=player_seat.name, online=player_seat in store.connections
                 ),
             )
+        # 导播状态回放：补发该 (account_id, match_id) 最近一次的场景/倒计时/
+        # 直播配置，舞台晚于控制台打开也能对齐，无需控制台再点一次。
+        # 仅 DIRECTOR 席、有暂存才发；选手/裁判永不收到。
+        if seat == Seat.DIRECTOR:
+            replay = self._director_state_payload(conn.account_id, store.id)
+            if replay is not None:
+                await self._send(
+                    conn,
+                    SrvDirectorCommand(action="state_sync", payload=replay),
+                )
         self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
         return conn
 
@@ -449,8 +486,10 @@ class ConnectionManager:
                 pass
             case ClientDirectorCommand(action=act, payload=pl):
                 # 导播控制台 → 同账号其他导播连接（OBS 舞台）：原样转发，
-                # 不落库、不回执 sender（瞬时操控指令，控制台无需回声）
+                # 不落库、不回执 sender（瞬时操控指令，控制台无需回声）；
+                # 同时更新状态暂存供新连接 state_sync 回放
                 if await self._require_seat(conn, Seat.DIRECTOR):
+                    self._update_director_state(conn.account_id, conn.match_id, act, pl)
                     await self.broadcast_to_other_directors(
                         conn, SrvDirectorCommand(action=act, payload=pl)
                     )
@@ -635,6 +674,65 @@ class ConnectionManager:
         # 清理半开/已断连接，避免导播多连接场景下累积垃圾
         for conn in dead:
             self._remove_connection(store, conn)
+
+    def _update_director_state(
+        self, account_id: str, match_id: str, action: str, payload: dict[str, Any]
+    ) -> None:
+        """每条导播指令到达时更新 (account_id, match_id) 状态暂存（回放用）。
+
+        倒计时时间线由服务端折算：start 记起点（自暂停恢复时前移已进行的
+        有效时长，即暂停补偿；运行中重复 start 幂等不重置）；pause 仅在
+        进行中生效；reset 清 started/paused 但保留 target_ms；config 为
+        覆盖合并（八键可部分缺失）。payload 值不校验，与广播口径一致。
+        """
+        st = self._director_state.setdefault((account_id, match_id), _DirectorState())
+        now = _now_ms()
+        match action:
+            case "switch_scene":
+                st.scene = payload.get("scene")
+            case "soon_set_target":
+                st.soon_target_ms = payload.get("target_ms")
+            case "soon_start":
+                if st.soon_started_ms is not None and st.soon_paused_ms is not None:
+                    # 暂停恢复：起点 = now - 暂停前的有效进行时长
+                    ran = st.soon_paused_ms - st.soon_started_ms
+                    st.soon_started_ms = now - max(ran, 0)
+                elif st.soon_started_ms is None:
+                    st.soon_started_ms = now  # 首次启动
+                st.soon_paused_ms = None
+            case "soon_pause":
+                # 仅进行中可暂停（幂等：已暂停不重复记点）
+                if st.soon_started_ms is not None and st.soon_paused_ms is None:
+                    st.soon_paused_ms = now
+            case "soon_reset":
+                st.soon_started_ms = None
+                st.soon_paused_ms = None  # target_ms 保留
+            case "config_update":
+                cfg = payload.get("config")
+                if isinstance(cfg, dict):
+                    st.config.update(cfg)
+
+    def _director_state_payload(
+        self, account_id: str, match_id: str
+    ) -> dict[str, Any] | None:
+        """构建 state_sync 回放 payload；该 key 无任何指令历史时返回 None。
+
+        started_at/paused_at/now_ms 均为服务器毫秒时间戳，前端以 now_ms 做
+        时钟偏移校正（elapsed = now_ms - started_at，已扣暂停）。
+        """
+        st = self._director_state.get((account_id, match_id))
+        if st is None:
+            return None
+        return {
+            "scene": st.scene,
+            "soon": {
+                "target_ms": st.soon_target_ms,
+                "started_at": st.soon_started_ms,
+                "paused_at": st.soon_paused_ms,
+                "now_ms": _now_ms(),
+            },
+            "config": st.config,
+        }
 
     async def broadcast_to_other_directors(
         self, sender: Connection, msg: ServerMessage
