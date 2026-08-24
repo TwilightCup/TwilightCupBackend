@@ -63,6 +63,10 @@ class AccountCreate(BaseModel):
     roles: list[AccountType] = Field(
         description="角色集合（可多选）：1=选手 2=裁判 3=导播 4=管理员"
     )
+    speedrun_id: str | None = Field(
+        default=None,
+        description="speedrun.com 账号绑定（用户名或 8 位用户 id），可空",
+    )
 
 
 class AccountOut(BaseModel):
@@ -70,6 +74,7 @@ class AccountOut(BaseModel):
     username: str
     roles: list[AccountType]
     display_name: str
+    speedrun_id: str | None = None
     created_at: datetime
 
     @classmethod
@@ -79,6 +84,7 @@ class AccountOut(BaseModel):
             username=account.username,
             roles=account.roles,
             display_name=account.display_name,
+            speedrun_id=account.speedrun_id,
             created_at=account.created_at,
         )
 
@@ -147,6 +153,9 @@ class MatchOut(BaseModel):
     player_b_id: str
     player_a_username: str = ""
     player_b_username: str = ""
+    # 双方选手的 speedrun.com 账号绑定（导播 categoryinfo 场景高亮用；未绑定为 None）
+    player_a_speedrun: str | None = None
+    player_b_speedrun: str | None = None
     referee_id: str
     director_id: str
     winner: str | None
@@ -163,16 +172,20 @@ class MatchOut(BaseModel):
     ) -> MatchOut:
         """构造 MatchOut。
 
-        db 可选：传入时附带解析双方 username（裁判/导播端展示用）；
+        db 可选：传入时附带解析双方 username 与 speedrun 绑定（裁判/导播端展示用）；
         storage 可选：传入时给 mappool 每个 Pick 的 logo 签 logo_url。
         """
         a_username = ""
         b_username = ""
+        a_speedrun = None
+        b_speedrun = None
         if db is not None:
             a = db.accounts.get(session.player_a_id)
             b = db.accounts.get(session.player_b_id)
             a_username = a.username if a is not None else ""
             b_username = b.username if b is not None else ""
+            a_speedrun = a.speedrun_id if a is not None else None
+            b_speedrun = b.speedrun_id if b is not None else None
         mappool = session.mappool
         if storage is not None:
             for pick in mappool.all_picks():
@@ -193,6 +206,8 @@ class MatchOut(BaseModel):
             player_b_id=session.player_b_id,
             player_a_username=a_username,
             player_b_username=b_username,
+            player_a_speedrun=a_speedrun,
+            player_b_speedrun=b_speedrun,
             referee_id=session.referee_id,
             director_id=session.director_id,
             winner=session.winner,

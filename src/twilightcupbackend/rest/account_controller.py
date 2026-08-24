@@ -17,6 +17,8 @@ class AccountUpdate(BaseModel):
     display_name: str | None = None
     password: str | None = None
     roles: list[AccountType] | None = None
+    # speedrun.com 绑定；空串 = 解绑（传 None = 不改）
+    speedrun_id: str | None = None
 
 
 def _normalize_roles(roles: list[AccountType]) -> list[AccountType]:
@@ -56,6 +58,7 @@ class AccountController(Routable):
             password_hash=hash_password(body.password),
             roles=_normalize_roles(body.roles),
             display_name=body.display_name,
+            speedrun_id=body.speedrun_id.strip() or None if body.speedrun_id else None,
         )
         try:
             self.db.accounts.insert(account)
@@ -126,6 +129,8 @@ class AccountController(Routable):
             account.password_hash = hash_password(body.password)
         if body.roles is not None:
             account.roles = _normalize_roles(body.roles)
+        if body.speedrun_id is not None:
+            account.speedrun_id = body.speedrun_id.strip() or None
         try:
             self.db.accounts.replace(account)
         except DuplicateKeyError as exc:

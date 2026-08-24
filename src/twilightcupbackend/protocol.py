@@ -355,7 +355,8 @@ class SrvPickAnnounced(BaseModel):
     """选图确定即向全体成员提前下发合集（预览；round_start 仍是唯一权威）。
 
     裁判每次重新应用选图都会重发，选手端以最新一次为准；
-    PREP 阶段选手断线重连时在握手序列补发（见 connection_manager.connect）。
+    PREP 阶段选手断线重连、以及晚连的导播席（各阶段，categoryinfo 场景
+    对齐当前项目用）都在握手序列补发（见 connection_manager.connect）。
     """
 
     model_config = _cfg

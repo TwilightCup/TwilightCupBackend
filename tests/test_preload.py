@@ -366,6 +366,50 @@ def test_reconnect_replays_pick_announced(world) -> None:  # type: ignore[no-unt
 
 
 # ---------------------------------------------------------------------------
+# 场景 8b：晚连导播席补发 pick_announced（categoryinfo 场景对齐当前项目）
+# ---------------------------------------------------------------------------
+
+
+def test_late_director_replays_pick_announced(world) -> None:  # type: ignore[no-untyped-def]
+    """场景 8b：裁判宣布选图后导播才连入 → 握手补发 pick_announced（含映射字段）。"""
+    client, _, _, tokens = world
+    with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
+        _drain(ws_r, 5)
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _drain(ws_r, 3)
+        _select(ws_r, "ML1")
+        _recv_until(ws_r, lambda m: m["type"] == "pick_announced")
+        with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d:
+            m = _recv_until(ws_d, lambda m: m["type"] == "pick_announced")
+            assert m["pick_code"] == "ML1"
+            # speedrun.com 映射字段随 Pick 快照完整下发（默认值也带键）
+            assert "speedrun_category_id" in m["pick"]
+            assert "speedrun_level_id" in m["pick"]
+            assert m["pick"]["speedrun_variables"] == {}
+
+
+def test_late_director_no_pick_before_select(world) -> None:  # type: ignore[no-untyped-def]
+    """场景 8c：尚未宣布选图时导播连入 → 握手不含 pick_announced。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_d, 5)
+        # 裁判进 PREP（不选图）；哨兵聊天回声前的导播消息里不应有 pick_announced
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _recv_until(ws_d, _phase_is(PHASE_PREP))
+        ws_r.send_json({"type": "chat", "text": "ping"})
+        got = _collect_until(
+            ws_d, lambda m: m["type"] == "chat" and m["text"] == "ping"
+        )
+        assert not any(m["type"] == "pick_announced" for m in got), (
+            f"未选图不应补发：{[m['type'] for m in got]}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 场景 10/11 + R3.1：守卫与限制
 # ---------------------------------------------------------------------------
 
