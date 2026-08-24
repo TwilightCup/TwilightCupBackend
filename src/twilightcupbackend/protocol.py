@@ -287,10 +287,22 @@ class SrvChat(BaseModel):
 
 
 class SrvSystem(BaseModel):
+    """系统消息：全场广播（sender=Twilight）或单席位定向提示（sender=System）。
+
+    广播走 ConnectionManager.system_message（全员逐字一致并落库）；定向
+    提示（如重连回 PREP 的补发提示）仅发该连接、不落库。客户端以 sender
+    为聊天展示前缀；错误回执仍走 SrvError（不带 sender，客户端沿用
+    "System" 前缀）。
+    """
+
     model_config = _cfg
     type: Literal["system"] = "system"
     text: str
     kind: str = "info"
+    sender: Literal["Twilight", "System"] = Field(
+        default="Twilight",
+        description="展示前缀：全场广播为 Twilight，单席位定向提示为 System",
+    )
     ts: datetime = Field(default_factory=now_ts)
 
 

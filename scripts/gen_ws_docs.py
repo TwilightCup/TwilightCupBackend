@@ -70,7 +70,10 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvAuthOk": "连接鉴权成功，告知座位与比赛。",
     "SrvAuthError": "连接鉴权失败（令牌无效/未参与比赛等）。",
     "SrvChat": "广播一条聊天消息（含发送者自己的回声）。",
-    "SrvSystem": "广播一条系统消息（命令回执、倒计时提示、回合信息等）。",
+    "SrvSystem": "系统消息：全场广播（命令回执、倒计时提示、回合信息等）或"
+    "单席位定向提示。sender 为聊天展示前缀：广播 ``Twilight``（与落库 "
+    "ChatMessage.sender_name 一致，全员逐字相同）；定向提示 ``System``"
+    "（仅目标席位收到、不落库，如重连回 PREP 的补发提示）。",
     "SrvReadyState": "双方准备状态变更。",
     "SrvPreloadState": "双方预载状态广播（上报/重置时；取值 "
     "absent|in_progress|done|failed|na，absent=从未上报）。",
@@ -107,7 +110,9 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvDisplaced": "本连接被同身份（账号+座位+比赛）且带 ``exclusive=1`` 的新连接"
     "顶掉：先于 close(4001) 送达。被顶掉 ≠ 鉴权失败（token 仍有效），"
     "前端应停止自动重连并提示「已在其他窗口打开」。",
-    "SrvError": "错误回执（命令非法/权限不足/比赛已暂停等）。",
+    "SrvError": "错误回执（命令非法/权限不足/比赛已暂停等）。仅发给触发方"
+    "（特定连接/席位，不广播、不落库）；客户端展示沿用 ``System`` 前缀，"
+    "与全场广播的 ``system`` 消息（``Twilight``）区分。",
 }
 
 ENUMS: list[tuple[str, type[Enum]]] = [
@@ -207,7 +212,10 @@ def main() -> None:
         "（裁判端/选手端用，导播各场景页不用）。\n"
         "- 鉴权成功后先发 `auth_ok`，再推 `ready_state`、`phase_change`；"
         "PREP 阶段选手席补发 `pick_announced`（有待选图时），各席位补发"
-        " `preload_state` 快照。\n"
+        " `preload_state` 快照；选手席另收仅其可见的 System 前缀定向提示："
+        "当前选图（有选图时）与未就绪时的 prep 提示。选手连入时向全员"
+        "（含本人）广播 `seat.online` 系统消息（广播 system 消息 = Twilight "
+        "前缀，各端逐字一致）。\n"
         "- 导播连接只读：除 `director_subscribe`/`heartbeat`/`director_command` 外"
         "入站一律拒绝；`director_command` 仅定向转发给同账号其他导播连接"
         "（OBS 舞台），不影响比赛状态。\n"

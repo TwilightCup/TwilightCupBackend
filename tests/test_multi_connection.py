@@ -39,7 +39,7 @@ def test_director_multi_connection_not_evicted(world) -> None:  # type: ignore[n
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d1,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d2,
     ):
-        _drain(ws_pa, 5)
+        _drain(ws_pa, 6)
         _drain(ws_d1, 5)
         _drain(ws_d2, 5)
         ws_pa.send_json({"type": "chat", "text": "broadcast-hi"})

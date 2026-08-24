@@ -122,6 +122,17 @@ def test_forfeit(world) -> None:  # type: ignore[no-untyped-def]
         )
         cum = _recv_until(ws_r, lambda m: m["type"] == "cumulative_score")
         assert cum["wins_b"] == 1
+        # 比分同步的全场系统消息：Twilight 前缀，选手席与裁判席逐字一致；
+        # 格式为「用户名 比分 : 比分 用户名」（登录名而非展示名）
+        score_r = _recv_until(
+            ws_r, lambda m: m["type"] == "system" and m["kind"] == "score"
+        )
+        assert score_r["sender"] == "Twilight"
+        assert score_r["text"] == "pa 0 : 1 pb"
+        score_b = _recv_until(
+            ws_b, lambda m: m["type"] == "system" and m["kind"] == "score"
+        )
+        assert score_b["text"] == score_r["text"]
 
 
 def test_rematch(world) -> None:  # type: ignore[no-untyped-def]

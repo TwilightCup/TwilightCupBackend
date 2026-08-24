@@ -89,7 +89,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a2,
     ):
         _drain(ws_r2, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a2, 6)
         ws_a2.send_json({"type": "reconnect_resync", "round_id": rid})
         msgs = [ws_a2.receive_json() for _ in range(2)]
         assert all(m["type"] == "player_status" for m in msgs)

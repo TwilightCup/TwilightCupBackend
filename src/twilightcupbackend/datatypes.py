@@ -470,7 +470,7 @@ class ChatMessage(Document):
     match_id: str
     sender_role: ChatSenderRole
     sender_id: str | None  # 系统消息为 None
-    sender_name: str  # 展示名（系统消息为 "系统"）
+    sender_name: str  # 展示名（系统消息为 "Twilight"，见 protocol.SrvSystem.sender）
     text: str
     is_system: bool = False
     ts: datetime = Field(default_factory=now_ts)
