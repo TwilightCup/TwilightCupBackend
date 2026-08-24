@@ -19,6 +19,8 @@ from twilightcupbackend.datatypes import (
     Mappool,
     Match,
     ScoringMethod,
+    Tournament,
+    TournamentFormat,
     TournamentStatus,
 )
 from twilightcupbackend.main import create_app
@@ -126,9 +128,37 @@ def test_seed_idempotent(env: SimpleNamespace) -> None:
     env.db.ensure_default_tournament()  # 重复调用幂等
     t = env.db.tournaments.get(DEFAULT_TOURNAMENT_ID)
     assert t is not None
-    assert t.name == "默认赛事"
+    assert t.name == "黄昏杯"
     assert t.status == TournamentStatus.DRAFT
     assert t.participant_ids == []
+
+
+def test_rename_legacy_default_tournament(env: SimpleNamespace) -> None:
+    """存量迁移：旧 seed 名「默认赛事」→「黄昏杯」；幂等；自定义名不覆盖。"""
+    env.db.tournaments.insert(
+        Tournament(
+            id=DEFAULT_TOURNAMENT_ID,
+            name="默认赛事",
+            format=TournamentFormat.SINGLE_ELIM,
+            created_by="system",
+        )
+    )
+    env.db.ensure_default_tournament()
+    t = env.db.tournaments.get(DEFAULT_TOURNAMENT_ID)
+    assert t is not None
+    assert t.name == "黄昏杯"
+    # 已改过名再跑：幂等不动
+    env.db.ensure_default_tournament()
+    t = env.db.tournaments.get(DEFAULT_TOURNAMENT_ID)
+    assert t is not None
+    assert t.name == "黄昏杯"
+    # 非旧名（如管理员手动改过）：不得覆盖
+    t.name = "自定义名"
+    env.db.tournaments.replace(t)
+    env.db.ensure_default_tournament()
+    t = env.db.tournaments.get(DEFAULT_TOURNAMENT_ID)
+    assert t is not None
+    assert t.name == "自定义名"
 
 
 def test_standalone_match_attaches_default(env: SimpleNamespace) -> None:
@@ -169,7 +199,7 @@ def test_default_tournament_mutations_rejected(env: SimpleNamespace) -> None:
     # 赛事仍存在且未被改动
     t = env.db.tournaments.get(tid)
     assert t is not None
-    assert t.name == "默认赛事"
+    assert t.name == "黄昏杯"
 
 
 async def test_match_end_does_not_complete_default(env: SimpleNamespace) -> None:
@@ -261,7 +291,7 @@ def test_me_tournament_detail_includes_default(env: SimpleNamespace) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["id"] == DEFAULT_TOURNAMENT_ID
-    assert body["name"] == "默认赛事"
+    assert body["name"] == "黄昏杯"
     assert body["status"] == TournamentStatus.DRAFT
 
     # 无关账号 403；不存在 404

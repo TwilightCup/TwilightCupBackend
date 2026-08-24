@@ -95,16 +95,23 @@ class DBController:
         永不结束（format 仅占位，生成赛程端点已对其禁用）。
         存量 ``tournament_id=None`` 的比赛统一回填到默认赛事。
         """
-        if self.tournaments.get(DEFAULT_TOURNAMENT_ID) is None:
+        existing = self.tournaments.get(DEFAULT_TOURNAMENT_ID)
+        if existing is None:
             self.tournaments.insert(
                 Tournament(
                     id=DEFAULT_TOURNAMENT_ID,
-                    name="默认赛事",
+                    name="黄昏杯",
                     format=TournamentFormat.SINGLE_ELIM,
                     created_by="system",
                 )
             )
             self.logger.info("默认赛事已创建 (id=%s)。", DEFAULT_TOURNAMENT_ID)
+        elif existing.name == "默认赛事":
+            # 品牌名迁移：早期 seed 名为「默认赛事」→「黄昏杯」；管理员改过
+            # 名的（≠旧名）不动（幂等，仅识别旧名）
+            existing.name = "黄昏杯"
+            self.tournaments.replace(existing)
+            self.logger.info("默认赛事已更名「黄昏杯」(id=%s)。", DEFAULT_TOURNAMENT_ID)
         # Python 侧过滤 None（避免 Mongo 字段缺失 vs null 歧义，兼容 mongomock）
         for m in self.matches.find():
             if m.tournament_id is None:
