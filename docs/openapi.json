@@ -2864,9 +2864,23 @@
         "tags": [
           "speedrun"
         ],
-        "summary": "HFF 分类与关卡元数据（speedrun.com 代理）",
-        "description": "透传 /games/{hff}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。缓存 10 分钟。",
+        "summary": "游戏分类与关卡元数据（speedrun.com 代理）",
+        "description": "透传 /games/{id}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。默认 HFF，game_id 可选 Category Extensions 子游戏。缓存 10 分钟。",
         "operationId": "game_meta_speedrun_game_meta_get",
+        "parameters": [
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2876,8 +2890,21 @@
               }
             }
           },
+          "400": {
+            "description": "游戏 id 不在白名单"
+          },
           "502": {
             "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
@@ -2933,6 +2960,18 @@
               "title": "Top"
             },
             "description": "名次数"
+          },
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
           }
         ],
         "responses": {
@@ -2943,6 +2982,67 @@
                 "schema": {}
               }
             }
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/pb": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "用户的全部个人最好成绩（代理）",
+        "description": "透传 /users/{id}/personal-bests?game={id}；前端按分类/关卡/子分类过滤出当前项目的 PB（名次可超出榜单 Top N）。game_id 默认 HFF。缓存 60 秒。",
+        "operationId": "pb_speedrun_pb_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "speedrun.com 用户 id",
+              "title": "User Id"
+            },
+            "description": "speedrun.com 用户 id"
+          },
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "游戏 id 不在白名单"
           },
           "502": {
             "description": "上游请求失败"

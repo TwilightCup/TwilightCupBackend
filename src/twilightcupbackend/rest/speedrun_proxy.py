@@ -5,10 +5,14 @@
 100 请求/分）。仅代理以下白名单只读端点，需任一 ADMIN/REFEREE/DIRECTOR
 角色（require_viewer）：
 
-- GET /speedrun/game-meta                      → /games/{hff}?embed=categories,levels
+- GET /speedrun/game-meta                      → /games/{id}?embed=categories,levels
 - GET /speedrun/variables?category_id&level_id → /categories|levels/{id}/variables
 - GET /speedrun/leaderboard?category_id&level_id&top&var-*
 - GET /speedrun/user?lookup=                   → /users?lookup=
+- GET /speedrun/pb?user_id=                    → /users/{id}/personal-bests?game=
+
+游戏白名单：HFF 主游戏（默认）与 Category Extensions 子游戏（No CP% /
+Jumpless% 词条项目）。
 
 上游 420 限流原状态码透传（前端按限流分支提示）；其余上游错误与网络失败
 统一 502；响应体为 speedrun.com 原文 JSON。
@@ -26,9 +30,19 @@ from fastapi import Depends, HTTPException, Query, Request
 from ..auth import Account, require_viewer
 
 SR_BASE = "https://www.speedrun.com/api/v1"
-HFF_GAME_ID = "k6qgnmdg"  # Human: Fall Flat（黄昏杯唯一项目）
+HFF_GAME_ID = "k6qgnmdg"  # Human: Fall Flat（黄昏杯主项目）
+EXT_GAME_ID = "o6gl20nd"  # Human Fall Flat Category Extensions（No CP%/Jumpless%）
+_ALLOWED_GAMES = {HFF_GAME_ID, EXT_GAME_ID}
 TTL_META_S = 600.0  # 游戏/变量/用户解析：变更极少
 TTL_LEADERBOARD_S = 60.0  # 榜单：随 run 提交变动
+
+
+def _game_id(game_id: str) -> str:
+    """校验游戏 id 白名单（默认 HFF），非法返回 400。"""
+    gid = (game_id or HFF_GAME_ID).strip()
+    if gid not in _ALLOWED_GAMES:
+        raise HTTPException(400, "不支持的游戏 id")
+    return gid
 
 _client: httpx.AsyncClient | None = None
 
@@ -96,17 +110,22 @@ class SpeedrunProxyController(Routable):
 
     @get(
         "/game-meta",
-        summary="HFF 分类与关卡元数据（speedrun.com 代理）",
-        description="透传 /games/{hff}?embed=categories,levels；管理端映射选择器"
-        "与 categoryinfo 场景自动解析的选项源。缓存 10 分钟。",
-        responses={502: {"description": "上游请求失败"}},
+        summary="游戏分类与关卡元数据（speedrun.com 代理）",
+        description="透传 /games/{id}?embed=categories,levels；管理端映射选择器"
+        "与 categoryinfo 场景自动解析的选项源。默认 HFF，game_id 可选 "
+        "Category Extensions 子游戏。缓存 10 分钟。",
+        responses={
+            400: {"description": "游戏 id 不在白名单"},
+            502: {"description": "上游请求失败"},
+        },
     )
     async def game_meta(
         self,
         _: Account = Depends(require_viewer),
+        game_id: str = Query(default=HFF_GAME_ID, description="游戏 id（默认 HFF）"),
     ) -> Any:
         return await _proxy_json(
-            f"{SR_BASE}/games/{HFF_GAME_ID}",
+            f"{SR_BASE}/games/{_game_id(game_id)}",
             TTL_META_S,
             {"embed": "categories,levels"},
         )
@@ -150,6 +169,7 @@ class SpeedrunProxyController(Routable):
         category_id: str = Query(description="分类 id"),
         level_id: str | None = Query(default=None, description="单关 IL 的关卡 id"),
         top: int = Query(default=15, ge=1, le=50, description="名次数"),
+        game_id: str = Query(default=HFF_GAME_ID, description="游戏 id（默认 HFF）"),
     ) -> Any:
         params = {"top": str(top), "embed": "players"}
         for key, value in request.query_params.items():
@@ -161,7 +181,9 @@ class SpeedrunProxyController(Routable):
             else f"category/{category_id}"
         )
         return await _proxy_json(
-            f"{SR_BASE}/leaderboards/{HFF_GAME_ID}/{board}", TTL_LEADERBOARD_S, params
+            f"{SR_BASE}/leaderboards/{_game_id(game_id)}/{board}",
+            TTL_LEADERBOARD_S,
+            params,
         )
 
     @get(
@@ -176,3 +198,26 @@ class SpeedrunProxyController(Routable):
         lookup: str = Query(description="用户名或 8 位用户 id"),
     ) -> Any:
         return await _proxy_json(f"{SR_BASE}/users", TTL_META_S, {"lookup": lookup})
+
+    @get(
+        "/pb",
+        summary="用户的全部个人最好成绩（代理）",
+        description="透传 /users/{id}/personal-bests?game={id}；前端按分类/关卡/"
+        "子分类过滤出当前项目的 PB（名次可超出榜单 Top N）。game_id 默认 HFF。"
+        "缓存 60 秒。",
+        responses={
+            400: {"description": "游戏 id 不在白名单"},
+            502: {"description": "上游请求失败"},
+        },
+    )
+    async def pb(
+        self,
+        _: Account = Depends(require_viewer),
+        user_id: str = Query(description="speedrun.com 用户 id"),
+        game_id: str = Query(default=HFF_GAME_ID, description="游戏 id（默认 HFF）"),
+    ) -> Any:
+        return await _proxy_json(
+            f"{SR_BASE}/users/{user_id}/personal-bests",
+            TTL_LEADERBOARD_S,
+            {"game": _game_id(game_id)},
+        )
