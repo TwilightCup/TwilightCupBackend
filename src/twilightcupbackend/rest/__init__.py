@@ -13,6 +13,7 @@ from .log_controller import LogController
 from .mappool_controller import MappoolController
 from .match_controller import MatchController
 from .me_controller import MeController
+from .speedrun_proxy import SpeedrunProxyController
 from .tournament_controller import TournamentController
 from .upload_controller import UploadController
 
@@ -31,5 +32,6 @@ def register_routes(app: FastAPI, db: DBController, settings: Settings) -> None:
     app.include_router(TournamentController(db, cm, storage).router)
     app.include_router(MeController(db, cm, storage).router)
     app.include_router(LogController(db).router)
+    app.include_router(SpeedrunProxyController().router)
     if storage is not None:
         app.include_router(UploadController(db, storage).router)

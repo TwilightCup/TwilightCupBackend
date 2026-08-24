@@ -2859,6 +2859,227 @@
         }
       }
     },
+    "/speedrun/game-meta": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "HFF 分类与关卡元数据（speedrun.com 代理）",
+        "description": "透传 /games/{hff}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。缓存 10 分钟。",
+        "operationId": "game_meta_speedrun_game_meta_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "上游请求失败"
+          }
+        }
+      }
+    },
+    "/speedrun/leaderboard": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "项目排行榜（speedrun.com 代理）",
+        "description": "单关传 level_id 走 IL 端点；var-{变量id}={值id} 为子分类过滤（原样转发）。缓存 60 秒。",
+        "operationId": "leaderboard_speedrun_leaderboard_get",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "分类 id",
+              "title": "Category Id"
+            },
+            "description": "分类 id"
+          },
+          {
+            "name": "level_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "单关 IL 的关卡 id",
+              "title": "Level Id"
+            },
+            "description": "单关 IL 的关卡 id"
+          },
+          {
+            "name": "top",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "description": "名次数",
+              "default": 15,
+              "title": "Top"
+            },
+            "description": "名次数"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/user": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "按用户名/ID 解析 speedrun.com 用户（代理）",
+        "description": "透传 /users?lookup=；找不到时上游返回空 data。缓存 10 分钟。",
+        "operationId": "user_speedrun_user_get",
+        "parameters": [
+          {
+            "name": "lookup",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "用户名或 8 位用户 id",
+              "title": "Lookup"
+            },
+            "description": "用户名或 8 位用户 id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/variables": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "分类/关卡的子分类变量（speedrun.com 代理）",
+        "description": "level_id 优先走 /levels/{id}/variables，否则 /categories/{id}/variables。缓存 10 分钟。",
+        "operationId": "variables_speedrun_variables_get",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "分类 id",
+              "title": "Category Id"
+            },
+            "description": "分类 id"
+          },
+          {
+            "name": "level_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "关卡 id（优先）",
+              "title": "Level Id"
+            },
+            "description": "关卡 id（优先）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "category_id 与 level_id 均缺失"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/uploads/sign": {
       "get": {
         "tags": [
@@ -5541,6 +5762,10 @@
     {
       "name": "logs",
       "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细"
+    },
+    {
+      "name": "speedrun",
+      "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与项目信息场景的选项/榜单数据源"
     }
   ]
 }
