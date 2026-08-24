@@ -263,6 +263,9 @@ class Account(Document):
     password_hash: str  # 口令哈希
     roles: list[AccountType] = Field(default_factory=list)  # 角色集合
     display_name: str  # 展示名
+    # speedrun.com 账号绑定（用户名或 8 位用户 id；导播 categoryinfo 场景用于
+    # 在榜单中高亮本场选手，运行时经 /users?lookup= 解析）。未绑定为 None。
+    speedrun_id: str | None = None
     created_at: datetime = Field(default_factory=now_ts)
 
     @model_validator(mode="before")
@@ -336,6 +339,12 @@ class Pick(BaseModel):
     # 见 backend-round-start-single-scoring §2.2）。图池选图恒为 None
     # ——计分方式属于赛制（Match.scoring_method），不属于图池。
     single_scoring: str | None = None
+    # speedrun.com 排行榜映射（导播 categoryinfo 场景拉榜用；图池编辑器配置）。
+    # 游戏固定为 Human: Fall Flat（k6qgnmdg），不存字段。category 为空 = 未映射。
+    speedrun_category_id: str | None = None  # 分类 id（全游戏或单关 IL 通用）
+    speedrun_level_id: str | None = None  # 单关 IL 分类的关卡 id；全游戏为 None
+    # 子分类过滤 {varId: valueId}
+    speedrun_variables: dict[str, str] = Field(default_factory=dict)
 
 
 class Category(BaseModel):

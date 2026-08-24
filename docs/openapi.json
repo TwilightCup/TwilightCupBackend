@@ -2983,6 +2983,18 @@
             "type": "array",
             "title": "Roles",
             "description": "角色集合（可多选）：1=选手 2=裁判 3=导播 4=管理员"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id",
+            "description": "speedrun.com 账号绑定（用户名或 8 位用户 id），可空"
           }
         },
         "type": "object",
@@ -3014,6 +3026,17 @@
           "display_name": {
             "type": "string",
             "title": "Display Name"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id"
           },
           "created_at": {
             "type": "string",
@@ -3079,6 +3102,17 @@
               }
             ],
             "title": "Roles"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id"
           }
         },
         "type": "object",
@@ -4223,6 +4257,28 @@
             "title": "Player B Username",
             "default": ""
           },
+          "player_a_speedrun": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player A Speedrun"
+          },
+          "player_b_speedrun": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player B Speedrun"
+          },
           "referee_id": {
             "type": "string",
             "title": "Referee Id"
@@ -4585,6 +4641,35 @@
               }
             ],
             "title": "Single Scoring"
+          },
+          "speedrun_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Category Id"
+          },
+          "speedrun_level_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Level Id"
+          },
+          "speedrun_variables": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Speedrun Variables"
           }
         },
         "type": "object",

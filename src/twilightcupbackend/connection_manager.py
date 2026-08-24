@@ -282,9 +282,10 @@ class ConnectionManager:
         if store.draft_state is not None:
             await self._send(conn, SrvDraftState(state=store.draft_state))
         # PREP 阶段补发选图预览与预载状态快照（断线重连的选手端恢复预载）：
-        # pick_announced 仅选手席需要（裁判/导播仅展示，现状忽略）；
-        # preload_state 对所有席位补发（重连端消除陈旧态）。其他阶段不补发
-        # （round_start 本就不重放，预载在 COUNTDOWN/IN_ROUND 已无意义）。
+        # pick_announced 补发选手席（含专属 System 提示）与导播席（下方
+        # DIRECTOR 分支，各阶段均补）；preload_state 对所有席位补发（重连端
+        # 消除陈旧态）。其他阶段选手席不补（round_start 本就不重放，预载在
+        # COUNTDOWN/IN_ROUND 已无意义）。
         if store.phase == MatchPhase.PREP:
             is_player = seat in (Seat.PLAYER_A, Seat.PLAYER_B)
             if is_player and store.pick_announced is not None:
@@ -370,6 +371,12 @@ class ConnectionManager:
                     conn,
                     SrvDirectorCommand(action="state_sync", payload=replay),
                 )
+            # 补发当前选图预览（若已宣布）：导播 categoryinfo 场景晚开也能立即
+            # 对齐当前项目。pick_announced 自 select_pick 起留存到下一次
+            # begin_prep 才清空，覆盖 PREP/倒计时/回合中各阶段（选手席的
+            # PREP 补发见上方分支，含专属 System 提示，口径不同勿合并）。
+            if store.pick_announced is not None:
+                await self._send(conn, store.pick_announced)
         self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
         return conn
 

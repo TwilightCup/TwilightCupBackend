@@ -22,13 +22,15 @@ from twilightcupbackend.datatypes import Account, AccountType
 BASE = "http://localhost:8000"
 SESSION_NAME = "联调试玩"
 
-# (username, password, display, type)
+# (username, password, display, type, speedrun 绑定)
+# playerA/B 绑定真实 speedrun.com 用户（Red Rock IL 榜前列），categoryinfo
+# 场景的高亮演示可见。
 ACCOUNTS = [
-    ("admin", "admin", "管理员", AccountType.ADMIN),
-    ("playerA", "playerA", "选手A", AccountType.PLAYER),
-    ("playerB", "playerB", "选手B", AccountType.PLAYER),
-    ("referee", "referee", "裁判", AccountType.REFEREE),
-    ("director", "director", "导播", AccountType.DIRECTOR),
+    ("admin", "admin", "管理员", AccountType.ADMIN, None),
+    ("playerA", "playerA", "选手A", AccountType.PLAYER, "DouBai"),
+    ("playerB", "playerB", "选手B", AccountType.PLAYER, "yuutaku"),
+    ("referee", "referee", "裁判", AccountType.REFEREE, None),
+    ("director", "director", "导播", AccountType.DIRECTOR, None),
 ]
 
 SEED_LEVELS = ["L1", "L2", "S1"]  # 联调关卡（先入库，图池按 id 引用）
@@ -66,6 +68,10 @@ def mappool_body(level_ids: dict[str, str]) -> dict:
                             "raw": {"levels": [level_ids["L1"], level_ids["L2"]]}
                         },
                         "category": "ML",
+                        # speedrun.com 映射演示：全游戏 Any%（n2yo3jzd）
+                        "speedrun_category_id": "n2yo3jzd",
+                        "speedrun_level_id": None,
+                        "speedrun_variables": {},
                     }
                 ],
             },
@@ -79,6 +85,11 @@ def mappool_body(level_ids: dict[str, str]) -> dict:
                         "retry_count": 2,
                         "collection": {"raw": {"level": level_ids["S1"]}},
                         "category": "SL",
+                        # speedrun.com 映射演示：Red Rock IL · PC 分类（任意%）
+                        # 榜首 DouBai / 次席 yuutaku 即上方绑定的演示选手
+                        "speedrun_category_id": "02ql5m9k",
+                        "speedrun_level_id": "y9m3opzw",
+                        "speedrun_variables": {},
                     }
                 ],
             },
@@ -118,6 +129,7 @@ def create_account(
     pwd: str,
     disp: str,
     role: int,
+    speedrun_id: str | None = None,
 ) -> None:
     r = client.post(
         "/admin/accounts",
@@ -126,6 +138,7 @@ def create_account(
             "password": pwd,
             "display_name": disp,
             "roles": [int(role)],
+            "speedrun_id": speedrun_id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -176,9 +189,9 @@ def main() -> None:
     print(f"关卡库就绪：{len(level_ids)} 个联调关卡")
     client = httpx.Client(base_url=BASE, timeout=10)
     admin_token = login(client, "admin", "admin")
-    for uname, pwd, disp, role in ACCOUNTS:
+    for uname, pwd, disp, role, srid in ACCOUNTS:
         if uname != "admin":
-            create_account(client, admin_token, uname, pwd, disp, int(role))
+            create_account(client, admin_token, uname, pwd, disp, int(role), srid)
     session = get_or_create_match(client, admin_token, level_ids)
 
     tokens = {uname: login(client, uname, pwd) for uname, pwd, *_ in ACCOUNTS}
