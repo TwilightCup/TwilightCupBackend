@@ -646,6 +646,7 @@ dependencies = [
     { name = "cachetools" },
     { name = "classy-fastapi" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "minio" },
     { name = "orjson" },
     { name = "pydantic" },
@@ -660,7 +661,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mongomock" },
     { name = "pyright" },
     { name = "pytest" },
@@ -673,7 +673,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=6.2.1" },
     { name = "classy-fastapi", specifier = ">=0.7.0" },
     { name = "fastapi", specifier = ">=0.119.1" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "minio", specifier = ">=7.2" },
     { name = "mongomock", marker = "extra == 'dev'", specifier = ">=4.1" },
     { name = "orjson", specifier = ">=3.11.3" },
