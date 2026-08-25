@@ -52,8 +52,11 @@ from .protocol import (
     SrvRoundResult,
     SrvRoundStart,
     SrvRoundStartedBroadcast,
+    SrvSubsegmentGap,
+    SrvSubsegmentSample,
     SrvVerdictEdit,
 )
+from .stores import SubsegmentSample
 from .timer_service import CountdownTimer
 
 if TYPE_CHECKING:
@@ -236,6 +239,7 @@ class MatchEngine:
         store.pending_pick_tags = []
         store.pending_pick_retry = None
         store.pick_announced = None
+        store.reset_subsegments()  # 上回合分段采样随之作废（回合级数据，不持久化）
         await self.cm.broadcast_match(match_id, SrvPhaseChange(phase=MatchPhase.PREP))
         await self.cm.system_message(
             match_id,
@@ -652,6 +656,8 @@ class MatchEngine:
             return
         # 回合开始后预载状态不再有意义，清场
         await self._reset_preload(store)
+        # 分段采样随新回合清零（重赛路径不经 begin_prep，此处兜底）
+        store.reset_subsegments()
 
         pick = self._pending_pick_enriched(store, pick)
 
@@ -869,6 +875,105 @@ class MatchEngine:
         self._log_event(match_id, "forfeit", {"seat": seat.name, "reason": reason})
         await self._maybe_to_judging(store, record)
 
+    async def on_subsegment_sample(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        seq: int,
+        t_ms: int,
+        px: float,
+        py: float,
+        pz: float,
+        dx: float,
+        dy: float,
+        dz: float,
+    ) -> None:
+        """选手端分段采样上报：存档并转发给对方（其客户端据此建检测平面）。"""
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        # 仅多关回合（单关 level_index 是尝试序号，语义不同；客户端本就不发）
+        if record.pick_snapshot.type != PickType.MULTI:
+            return
+        key = (seat, level_index, seq)
+        if key in store.subsegments:  # 重复上报去重
+            return
+        store.subsegments[key] = SubsegmentSample(
+            level_index=level_index,
+            seq=seq,
+            t_ms=t_ms,
+            px=px,
+            py=py,
+            pz=pz,
+            dx=dx,
+            dy=dy,
+            dz=dz,
+        )
+        # 只发对方 seat（裁判/导播消费 subsegment_gap 即可）；对方离线则仅存，
+        # 重连时由 on_reconnect_resync 按插入序补放
+        opp = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        await self.cm.send_to_seat(
+            match_id,
+            opp,
+            SrvSubsegmentSample(
+                seat=seat.name,
+                round_id=round_id,
+                level_index=level_index,
+                seq=seq,
+                t_ms=t_ms,
+                px=px,
+                py=py,
+                pz=pz,
+                dx=dx,
+                dy=dy,
+                dz=dz,
+            ),
+        )
+
+    async def on_subsegment_hit(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        seq: int,
+        t_ms: int,
+    ) -> None:
+        """选手穿越对方采样平面：记录首次命中并向全场广播实时时间差。"""
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        if record.pick_snapshot.type != PickType.MULTI:
+            return
+        owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        sample = store.subsegments.get((owner, level_index, seq))
+        if sample is None:  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
+            return
+        if (seat, level_index, seq) in store.subsegment_hits:  # 首次命中有效
+            return
+        store.subsegment_hits[(seat, level_index, seq)] = t_ms
+        await self.cm.broadcast_match(
+            match_id,
+            SrvSubsegmentGap(
+                round_id=round_id,
+                level_index=level_index,
+                seq=seq,
+                seat=owner.name,
+                sample_ms=sample.t_ms,
+                hit_seat=seat.name,
+                hit_ms=t_ms,
+                gap_ms=t_ms - sample.t_ms,
+            ),
+        )
+
     async def _broadcast_status(
         self, match_id: str, seat: Seat, state: PlayerRoundState
     ) -> None:
@@ -946,6 +1051,28 @@ class MatchEngine:
                 attempts=opp.attempts,
             ),
         )
+        # 分段采样回放：仅对方的采样（供其重建检测平面），按插入序逐条补发；
+        # 客户端按 (level_index, seq) 去重，重复补放无副作用
+        for (owner_seat, _level_index, _seq), s in store.subsegments.items():
+            if owner_seat == seat:
+                continue
+            await self.cm.send_to_seat(
+                match_id,
+                seat,
+                SrvSubsegmentSample(
+                    seat=owner_seat.name,
+                    round_id=round_id,
+                    level_index=s.level_index,
+                    seq=s.seq,
+                    t_ms=s.t_ms,
+                    px=s.px,
+                    py=s.py,
+                    pz=s.pz,
+                    dx=s.dx,
+                    dy=s.dy,
+                    dz=s.dz,
+                ),
+            )
 
     async def terminate_round(self, match_id: str, round_id: str, reason: str) -> None:
         """裁判强制终止当前回合（选手崩溃/断连不可判断，§10.1）。

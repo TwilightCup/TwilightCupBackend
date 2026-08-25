@@ -178,6 +178,38 @@
 | `status` | 'in_progress' | 'done' | 'failed' | 'na' | 是 | — |  |
 | `detail` | str | None | 否 | None |  |
 
+### `ClientSubsegmentSample`
+
+- type：'subsegment_sample'
+
+- 选手端分段采样上报（仅 MULTI 回合、PLAYER 席位，每秒一次）：每关「角色从装死苏醒」到「触碰通关判定区」窗口内采样位置与运动向量，t_ms 为该选手计时器（TwilightTimer）时间线上的当前总时间（与官方计分同一时钟）；位移全 0 = 该秒近乎静止（照存不建检测平面）。纯内存回合级数据，不落库、回合结束清空。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `seq` | int | 是 | — |  |
+| `t_ms` | int | 是 | — |  |
+| `px` | float | 是 | — |  |
+| `py` | float | 是 | — |  |
+| `pz` | float | 是 | — |  |
+| `dx` | float | 是 | — |  |
+| `dy` | float | 是 | — |  |
+| `dz` | float | 是 | — |  |
+
+### `ClientSubsegmentHit`
+
+- type：'subsegment_hit'
+
+- 选手穿越对手采样平面时上报（仅 MULTI 回合）；t_ms 为命中时刻自己计时器时间线上的总时间，首次命中有效（重复忽略）。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `seq` | int | 是 | — |  |
+| `t_ms` | int | 是 | — |  |
+
 ### `ClientRefereeMarkPrep`
 
 - type：'referee_mark_prep'
@@ -494,6 +526,43 @@
 | `this_level_ms` | int | 是 | — |  |
 | `total_ms` | int | None | 否 | None |  |
 | `invalid_reasons` | list[str] | None | 否 | None |  |
+
+### `SrvSubsegmentSample`
+
+- type：'subsegment_sample'
+
+- 转发对手的采样点给对侧选手（其客户端据此建检测平面）；仅发对方 seat（裁判/导播不收），选手断线重连后按原序补放。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seat` | str | 是 | — |  |
+| `round_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `seq` | int | 是 | — |  |
+| `t_ms` | int | 是 | — |  |
+| `px` | float | 是 | — |  |
+| `py` | float | 是 | — |  |
+| `pz` | float | 是 | — |  |
+| `dx` | float | 是 | — |  |
+| `dy` | float | 是 | — |  |
+| `dz` | float | 是 | — |  |
+
+### `SrvSubsegmentGap`
+
+- type：'subsegment_gap'
+
+- 实时时间差广播（双方选手 + 裁判 + 导播；overlay 用）：某选手穿越对方采样平面时，``gap_ms = hit_ms - sample_ms``，>0 = 穿越方落后，可为负。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `round_id` | str | 是 | — |  |
+| `level_index` | int | 是 | — |  |
+| `seq` | int | 是 | — |  |
+| `seat` | str | 是 | — |  |
+| `sample_ms` | int | 是 | — |  |
+| `hit_seat` | str | 是 | — |  |
+| `hit_ms` | int | 是 | — |  |
+| `gap_ms` | int | 是 | — |  |
 
 ### `SrvRoundResult`
 
