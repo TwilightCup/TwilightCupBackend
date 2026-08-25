@@ -61,11 +61,12 @@ def create_app(db: DBController | None = None) -> FastAPI:
     ctl = db if db is not None else DBController(settings)
     own_db = db is None  # 是否由本次创建（决定是否在关闭时释放）
     registry = MatchRegistry()
+    storage = Storage(settings)
     connection_manager = ConnectionManager(ctl, registry, settings)
     connection_manager.command_router = CommandHandler(connection_manager)
-    connection_manager.match_engine = MatchEngine(connection_manager, ctl)
+    # storage 传入引擎：WS 下发的回合 pick 签展示图公开 URL（REST 输出层同口径）
+    connection_manager.match_engine = MatchEngine(connection_manager, ctl, storage)
     connection_manager.tournament_engine = TournamentEngine(ctl, connection_manager)
-    storage = Storage(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

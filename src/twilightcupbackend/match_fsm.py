@@ -34,6 +34,7 @@ from .datatypes import (
     SystemEvent,
     now_ts,
 )
+from .storage import Storage
 from .protocol import (
     PRELOAD_CAP,
     PreloadReportStatus,
@@ -135,10 +136,14 @@ class MatchEngine:
         self,
         cm: ConnectionManager,
         db: DBController,
+        storage: Storage | None = None,
         logger: Logger | None = None,
     ) -> None:
         self.cm = cm
         self.db = db
+        # 对象存储（可选）：WS 下发的回合 pick 按展示图 key 签公开 URL，
+        # 与 REST 输出层（MatchOut/MappoolOut）同口径
+        self.storage = storage
         self.logger = logger or getLogger("MatchEngine")
 
     # ------------------------------------------------------------------
@@ -622,6 +627,10 @@ class MatchEngine:
         lv = self.db.levels.get(level_id)
         return lv.name if lv is not None else level_id
 
+    def _logo_url(self, key: str | None) -> str | None:
+        """展示图 object key → 公开 URL（固定 URL 永久有效）；无 storage / 无 key 返回 None。"""
+        return self.storage.public_url(key) if self.storage else None
+
     def _pending_pick_enriched(self, store: MatchStore, pick: Pick) -> Pick:
         """按 pending 裁剪合并出下发的 pick（pick_announced 与 round_start 共用）。
 
@@ -629,6 +638,7 @@ class MatchEngine:
         见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
         single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
         Match.scoring_method 建赛时定、必填，恒非 None）。
+        logo_url 按展示图 key 签发（导播场景展示图用；图池原件不签，REST 输出层同口径）。
         """
         return pick.model_copy(
             update={
@@ -639,6 +649,7 @@ class MatchEngine:
                     else pick.retry_count
                 ),
                 "single_scoring": store.match.scoring_method.name.lower(),
+                "logo_url": self._logo_url(pick.logo),
             }
         )
 
@@ -1322,6 +1333,8 @@ class MatchEngine:
     async def _rematch(self, store: MatchStore, old_record: RoundRecord) -> None:
         store.round_counter += 1
         pick = old_record.pick_snapshot
+        # 旧快照可能早于「WS pick 签 logo_url」（恒 None），重签一次供重发
+        pick = pick.model_copy(update={"logo_url": self._logo_url(pick.logo)})
         new_record = RoundRecord(
             match_id=store.id,
             round_no=store.round_counter,
