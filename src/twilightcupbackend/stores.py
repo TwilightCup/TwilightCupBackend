@@ -35,6 +35,26 @@ class Connection:
         return self.seat == Seat.DIRECTOR
 
 
+@dataclass(eq=False)
+class SubsegmentSample:
+    """一个分段采样点（MULTI 回合实时差距跟踪；纯内存态，不持久化）。
+
+    采样窗口 = 每关「苏醒 → 触碰通关判定区」；t_ms 为采样方计时器
+    （TwilightTimer）时间线上的总时间。(dx,dy,dz) 为采样间隔位移，
+    全 0 = 静止（存档不建检测平面）。
+    """
+
+    level_index: int
+    seq: int
+    t_ms: int
+    px: float
+    py: float
+    pz: float
+    dx: float
+    dy: float
+    dz: float
+
+
 class MatchStore:
     """单场比赛的实时状态。"""
 
@@ -61,6 +81,11 @@ class MatchStore:
         self.wins_b: int = 0
         self.round_counter: int = 0
         self.current_round_id: str | None = None
+        # 分段采样（MULTI 实时差距跟踪；纯内存，回合结束即弃）：键 = (采样方,
+        # level_index, seq)，dict 保持插入序 → 重连回放天然按时间顺序。
+        self.subsegments: dict[tuple[Seat, int, int], SubsegmentSample] = {}
+        # 采样平面命中：键 = (穿越方, level_index, seq) → 命中时刻 t_ms（仅首次）。
+        self.subsegment_hits: dict[tuple[Seat, int, int], int] = {}
         # 裁判独立倒计时器（每比赛至多一个）
         self.counter_timer: CounterTimer | None = None
         # 比赛开始倒计时（auto 可被取消 / manual 不可）
@@ -105,6 +130,11 @@ class MatchStore:
     def reset_ready(self) -> None:
         self.a_ready = False
         self.b_ready = False
+
+    def reset_subsegments(self) -> None:
+        """清空本回合分段采样与命中记录（begin_prep / _begin_round 时调用）。"""
+        self.subsegments.clear()
+        self.subsegment_hits.clear()
 
 
 class MatchRegistry:

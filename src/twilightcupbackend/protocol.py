@@ -103,6 +103,40 @@ class ClientPreloadReport(BaseModel):
     detail: str | None = None  # 失败原因等，仅日志/告警用
 
 
+class ClientSubsegmentSample(BaseModel):
+    """选手端分段采样上报（仅 MULTI 回合、PLAYER 席位；每秒一次）。
+
+    采样窗口 = 每关「角色从装死苏醒」到「触碰通关判定区」；t_ms 为该选手
+    计时器（TwilightTimer，经 ITimerProvider 注册）时间线上的当前总时间
+    （RoundTotalMs）——与官方计分同一条时钟。
+    (dx,dy,dz) 为采样间隔位移，全 0 = 该秒近乎静止（照存不建检测平面）。
+    """
+
+    model_config = _cfg
+    type: Literal["subsegment_sample"] = "subsegment_sample"
+    round_id: str
+    level_index: int
+    seq: int  # 关内递增，从 0 起
+    t_ms: int
+    px: float
+    py: float
+    pz: float
+    dx: float
+    dy: float
+    dz: float
+
+
+class ClientSubsegmentHit(BaseModel):
+    """选手穿越对手采样平面时上报（仅 MULTI 回合；首次命中有效，重复忽略）。"""
+
+    model_config = _cfg
+    type: Literal["subsegment_hit"] = "subsegment_hit"
+    round_id: str
+    level_index: int
+    seq: int
+    t_ms: int  # 命中时刻该选手计时器时间线上的总时间（RoundTotalMs）
+
+
 class ClientRefereeMarkPrep(BaseModel):
     model_config = _cfg
     type: Literal["referee_mark_prep"] = "referee_mark_prep"
@@ -229,6 +263,8 @@ ClientMessage = Annotated[
     | ClientForfeitSignal
     | ClientReconnectResync
     | ClientPreloadReport
+    | ClientSubsegmentSample
+    | ClientSubsegmentHit
     | ClientRefereeMarkPrep
     | ClientRefereeSelectPick
     | ClientRefereeManualStart
@@ -405,6 +441,46 @@ class SrvLevelTimeUpdate(BaseModel):
     invalid_reasons: list[str] | None = None  # 同 ClientLevelTimeUpload（裁判端可见）
 
 
+class SrvSubsegmentSample(BaseModel):
+    """转发对手的采样点给对侧选手（其客户端据此建检测平面）。
+
+    仅发对方 seat（裁判/导播不收，overlay 消费 subsegment_gap）；
+    选手断线重连后由 reconnect_resync 触发按原序补放。
+    """
+
+    model_config = _cfg
+    type: Literal["subsegment_sample"] = "subsegment_sample"
+    seat: str  # 采样归属（PLAYER_A / PLAYER_B）
+    round_id: str
+    level_index: int
+    seq: int
+    t_ms: int
+    px: float
+    py: float
+    pz: float
+    dx: float
+    dy: float
+    dz: float
+
+
+class SrvSubsegmentGap(BaseModel):
+    """实时时间差广播（双方选手 + 裁判 + 导播；overlay 用）。
+
+    gap_ms = hit_ms - sample_ms，>0 = 穿越方落后，可为负。
+    """
+
+    model_config = _cfg
+    type: Literal["subsegment_gap"] = "subsegment_gap"
+    round_id: str
+    level_index: int
+    seq: int
+    seat: str  # 采样归属
+    sample_ms: int
+    hit_seat: str  # 穿越方
+    hit_ms: int
+    gap_ms: int
+
+
 class SrvRoundResult(BaseModel):
     model_config = _cfg
     type: Literal["round_result"] = "round_result"
@@ -517,6 +593,8 @@ ServerMessage = (
     | SrvRoundStartedBroadcast
     | SrvPlayerStatus
     | SrvLevelTimeUpdate
+    | SrvSubsegmentSample
+    | SrvSubsegmentGap
     | SrvRoundResult
     | SrvCumulativeScore
     | SrvMatchEnd

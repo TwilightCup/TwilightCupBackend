@@ -51,6 +51,8 @@ from .protocol import (
     ClientRefereeSelectPick,
     ClientRefereeTerminateRound,
     ClientRefereeVerdict,
+    ClientSubsegmentHit,
+    ClientSubsegmentSample,
     ServerMessage,
     SrvAuthError,
     SrvAuthOk,
@@ -91,6 +93,8 @@ _PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
     ClientProjectComplete,
     ClientForfeitSignal,
     ClientPreloadReport,
+    ClientSubsegmentSample,
+    ClientSubsegmentHit,
 )
 
 # exclusive 接管（last-wins takeover）：新连接以 exclusive=1 要求独占其身份 key
@@ -578,6 +582,27 @@ class ConnectionManager:
             case ClientPreloadReport(status=st, detail=d):
                 if await self._require_player(conn):
                     await engine.on_preload_report(conn.match_id, conn.seat, st, d)
+            case ClientSubsegmentSample(
+                round_id=rid,
+                level_index=li,
+                seq=sq,
+                t_ms=t,
+                px=px,
+                py=py,
+                pz=pz,
+                dx=dx,
+                dy=dy,
+                dz=dz,
+            ):
+                if await self._require_player(conn):
+                    await engine.on_subsegment_sample(
+                        conn.match_id, conn.seat, rid, li, sq, t, px, py, pz, dx, dy, dz
+                    )
+            case ClientSubsegmentHit(round_id=rid, level_index=li, seq=sq, t_ms=t):
+                if await self._require_player(conn):
+                    await engine.on_subsegment_hit(
+                        conn.match_id, conn.seat, rid, li, sq, t
+                    )
             case ClientLevelTimeUpload(
                 round_id=rid,
                 level_index=li,
