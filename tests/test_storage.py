@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from twilightcupbackend.auth import hash_password
 from twilightcupbackend.config import settings
-from twilightcupbackend.controllers import DBController
+from twilightcupbackend.controllers import DBController, resolve_pick_logo_url
 from twilightcupbackend.datatypes import (
     Account,
     AccountType,
@@ -41,10 +41,13 @@ class FakeStorage:
         self.objects[key] = data
         return key
 
-    def presigned_url(self, key: str | None) -> str | None:
+    def public_url(self, key: str | None) -> str | None:
         if not key:
             return None
         return f"http://fake-minio/twilightcup/{key}?sig=OK"
+
+    # 向后兼容旧调用名（与真实 Storage 同）
+    presigned_url = public_url
 
 
 def _pick(code: str, logo: str | None = None) -> Pick:
@@ -98,6 +101,75 @@ def test_mappool_out_no_logo() -> None:
     pick = out.mappool.categories[0].picks[0]
     assert pick.logo is None
     assert pick.logo_url is None
+
+
+# ---- 选图展示图按关卡回退（controllers.resolve_pick_logo_url）----
+
+
+def _mk_pick(levels: list[str], logo: str | None = None) -> Pick:
+    return Pick(
+        code="P1",
+        name="P1",
+        type=PickType.MULTI,
+        collection=CollectionConfig(raw={"name": "P1", "levels": levels}),
+        category="ML",
+        logo=logo,
+    )
+
+
+def _mk_db_levels() -> DBController:
+    """建 3 关卡库：L1/L2 配展示图，L3 不配（模拟 Any% 终点 Intro_Reprise 无图）。"""
+    from twilightcupbackend.datatypes import Level
+
+    db = DBController(settings, client=mongomock.MongoClient())
+    db.ensure_indexes()
+    for name, logo in (("L1", "logos/l1.png"), ("L2", "logos/l2.png"), ("L3", None)):
+        db.levels.insert(Level(name=name, display_name=name, logo=logo))
+    return db
+
+
+def _logo_url(db: DBController, pick: Pick) -> str | None:
+    return resolve_pick_logo_url(pick, db, FakeStorage())
+
+
+def test_pick_logo_wins_over_level_logo() -> None:
+    db = _mk_db_levels()
+    pick = _mk_pick(["L1", "L2"], logo="logos/own.png")
+    assert _logo_url(db, pick) == "http://fake-minio/twilightcup/logos/own.png?sig=OK"
+
+
+def test_pick_logo_falls_back_to_endpoint_level() -> None:
+    db = _mk_db_levels()
+    # 终点关 L2 配图 → 显示终点关（Aztec% → Aztec 口径）
+    pick = _mk_pick(["L1", "L2"])
+    assert _logo_url(db, pick) == "http://fake-minio/twilightcup/logos/l2.png?sig=OK"
+    # 终点关 L3 无图 → 逆序退到最近一个配图关（Any% 终点无图退到上一关口径）
+    pick = _mk_pick(["L1", "L2", "L3"])
+    assert _logo_url(db, pick) == "http://fake-minio/twilightcup/logos/l2.png?sig=OK"
+    pick = _mk_pick(["L1", "L3"])
+    assert _logo_url(db, pick) == "http://fake-minio/twilightcup/logos/l1.png?sig=OK"
+
+
+def test_pick_logo_level_by_legacy_name_and_workshop_skip() -> None:
+    db = _mk_db_levels()
+    # 遗留名引用（值是关卡名而非库内 id）：按名查库命中
+    pick = _mk_pick(["L2"])
+    assert db.levels.get("L2") is None  # 「L2」不是合法 id，走 get_by_name 分支
+    assert _logo_url(db, pick) == "http://fake-minio/twilightcup/logos/l2.png?sig=OK"
+    # 工坊数字 id / 空合集：返回 None（前端再按名称回退官方关卡图）
+    ws = _mk_pick(["1234567890"])
+    assert _logo_url(db, ws) is None
+    empty = _mk_pick([])
+    assert _logo_url(db, empty) is None
+
+
+def test_pick_logo_no_db_only_pick_logo() -> None:
+    # db 缺席（如 start/pause/resume 响应）：仅签 pick 自有，不做关卡回退
+    pick = _mk_pick(["L2"], logo="logos/own.png")
+    assert resolve_pick_logo_url(pick, None, FakeStorage()) == (
+        "http://fake-minio/twilightcup/logos/own.png?sig=OK"
+    )
+    assert resolve_pick_logo_url(_mk_pick(["L2"]), None, FakeStorage()) is None
 
 
 @pytest.fixture()

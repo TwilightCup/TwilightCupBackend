@@ -398,7 +398,7 @@ class SrvPickAnnounced(BaseModel):
     model_config = _cfg
     type: Literal["pick_announced"] = "pick_announced"
     pick_code: str
-    pick: Pick  # 完整 Pick（与 round_start.pick 同构，含词条/重试/计分方式）
+    pick: Pick  # 完整 Pick（与 round_start.pick 同构，含词条/重试/计分方式/展示图 URL）
     collection: CollectionConfig  # 与 round_start.collection 同构（已展开为显示名）
 
 

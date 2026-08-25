@@ -383,7 +383,7 @@ class MeController(Routable):
             mappool=match.mappool,
             created_by="system",
         )
-        return MappoolOut.from_doc(doc, self.storage)
+        return MappoolOut.from_doc(doc, self.storage, self.db)
 
     # -------------------------------------------------------- 账号自助
 
