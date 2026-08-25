@@ -44,6 +44,13 @@ DESCRIPTIONS: dict[str, str] = {
     "场景级预载仅 MULTI 合集，SINGLE 报 ``na``）。``failed`` 不阻塞开局"
     "（round_start 时选手端回退标准加载），仅触发 kind=preload 告警；"
     "旧版客户端连接不带 ``cap=preload1`` 不上报，门控豁免。",
+    "ClientSubsegmentSample": "选手端分段采样上报（仅 MULTI 回合、PLAYER 席位，"
+    "每秒一次）：每关「角色从装死苏醒」到「触碰通关判定区」窗口内采样位置与"
+    "运动向量，t_ms 为该选手计时器（TwilightTimer）时间线上的当前总时间"
+    "（与官方计分同一时钟）；位移全 0 = 该秒近乎静止（照存不建检测平面）。"
+    "纯内存回合级数据，不落库、回合结束清空。",
+    "ClientSubsegmentHit": "选手穿越对手采样平面时上报（仅 MULTI 回合）；"
+    "t_ms 为命中时刻自己计时器时间线上的总时间，首次命中有效（重复忽略）。",
     "ClientRefereeMarkPrep": "裁判标记进入回合准备阶段。",
     "ClientRefereeSelectPick": "裁判从图池选定本回合选图；CT 类别可随消息提交词条"
     "（0-ct_tag_count 个，服务端校验枚举/互斥/数量）。",
@@ -93,6 +100,11 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvRoundStartedBroadcast": "回合开始广播（含项目编号与名称；tags 为 CT 词条）。",
     "SrvPlayerStatus": "选手单回合实时状态（重连快照亦复用此消息）。",
     "SrvLevelTimeUpdate": "某选手单关用时更新（裁判/导播）。",
+    "SrvSubsegmentSample": "转发对手的采样点给对侧选手（其客户端据此建检测平面）；"
+    "仅发对方 seat（裁判/导播不收），选手断线重连后按原序补放。",
+    "SrvSubsegmentGap": "实时时间差广播（双方选手 + 裁判 + 导播；overlay 用）："
+    "某选手穿越对方采样平面时，``gap_ms = hit_ms - sample_ms``，>0 = 穿越方"
+    "落后，可为负。",
     "SrvRoundResult": "本回合结算（判定与双方成绩）。",
     "SrvCumulativeScore": "累计比分。",
     "SrvMatchEnd": "比赛结束，宣告胜方（判定落定且比分达到取胜分数时自动触发）。",
