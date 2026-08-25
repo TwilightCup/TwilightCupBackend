@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..controllers import resolve_pick_logo_url
+
 if TYPE_CHECKING:
     from ..storage import Storage
 
@@ -172,7 +174,8 @@ class MatchOut(BaseModel):
     ) -> MatchOut:
         """构造 MatchOut。
 
-        db 可选：传入时附带解析双方 username 与 speedrun 绑定（裁判/导播端展示用）；
+        db 可选：传入时附带解析双方 username 与 speedrun 绑定（裁判/导播端展示用），
+        并作为选图展示图按关卡回退的数据源（无 db 时仅签 pick 自有 logo）；
         storage 可选：传入时给 mappool 每个 Pick 的 logo 签 logo_url。
         """
         a_username = ""
@@ -189,7 +192,7 @@ class MatchOut(BaseModel):
         mappool = session.mappool
         if storage is not None:
             for pick in mappool.all_picks():
-                pick.logo_url = storage.presigned_url(pick.logo)
+                pick.logo_url = resolve_pick_logo_url(pick, db, storage)
         return cls(
             id=session.id,
             name=session.name,
@@ -238,12 +241,18 @@ class MappoolOut(BaseModel):
     created_at: datetime
 
     @classmethod
-    def from_doc(cls, doc: MappoolDoc, storage: Storage | None = None) -> MappoolOut:
-        """构造输出；若传入 storage，给每个 Pick 的 logo key 签发 presigned URL。"""
+    def from_doc(
+        cls,
+        doc: MappoolDoc,
+        storage: Storage | None = None,
+        db: Any = None,
+    ) -> MappoolOut:
+        """构造输出；若传入 storage，给每个 Pick 签 logo_url（db 传入时支持按
+        合集关卡回退 Level.logo，见 controllers.resolve_pick_logo_url）。"""
         mappool = doc.mappool
         if storage is not None:
             for pick in mappool.all_picks():
-                pick.logo_url = storage.presigned_url(pick.logo)
+                pick.logo_url = resolve_pick_logo_url(pick, db, storage)
         return cls(
             id=doc.id,
             name=doc.name,

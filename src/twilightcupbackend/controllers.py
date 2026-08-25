@@ -26,7 +26,8 @@ from .databases import (
     SystemEvents,
     Tournaments,
 )
-from .datatypes import DEFAULT_TOURNAMENT_ID, Tournament, TournamentFormat
+from .datatypes import DEFAULT_TOURNAMENT_ID, Pick, Tournament, TournamentFormat
+from .storage import Storage
 
 
 class DBController:
@@ -163,4 +164,50 @@ def player_running_conflict(
             who = db.accounts.get(acc_id)
             who_name = who.display_name if who else acc_id
             return f"{label}（{who_name}）当前在比赛「{other.name}」中进行中"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 选图展示图解析（REST 输出层与 WS 下发共用）
+# ---------------------------------------------------------------------------
+
+
+def resolve_pick_logo_url(
+    pick: Pick, db: DBController | None, storage: Storage | None
+) -> str | None:
+    """选图展示图公开 URL：pick 自有 logo（图池编辑器逐选图上传）优先；无则按
+    合集关卡回退取「终点关」的 Level.logo（关卡管理页配的展示图）。
+
+    展示图是管理员在两处配的：选图自带（Pick.logo）与关卡库（Level.logo）。
+    后者此前只在管理端表格显示、不流向任何下发口——本函数把它并进回退链，
+    使图池 / 比赛详情 / 项目信息各场景的选图卡都能显示关卡展示图。
+    """
+    if storage is None:
+        return None
+    key = pick.logo
+    if key is None and db is not None:
+        key = _endpoint_level_logo(pick, db)
+    return storage.public_url(key)
+
+
+def _endpoint_level_logo(pick: Pick, db: DBController) -> str | None:
+    """按合集关卡回退的展示图 key：取逆序第一个配了 logo 的关。
+
+    多关即「终点关」口径，与前端官方图按名称解析的约定一致（Aztec% 显示
+    Aztec；Any% 终点 Intro_Reprise 常无图，逆序退到 Ice）。关卡值可为库内
+    id / 遗留名 / 工坊数字 id：id 与名各查一次，工坊 id 查不到自然跳过
+    （前端再按名称回退官方关卡图）。全无图返回 None。
+    """
+    raw = pick.collection.raw if pick.collection is not None else {}
+    vals: list[str] = []
+    single = raw.get("level")
+    if isinstance(single, str) and single:
+        vals.append(single)
+    seq = raw.get("levels")
+    if isinstance(seq, list):
+        vals.extend(v for v in seq if isinstance(v, str) and v)
+    for v in reversed(vals):
+        lv = db.levels.get(v) or db.levels.get_by_name(v)
+        if lv is not None and lv.logo:
+            return lv.logo
     return None

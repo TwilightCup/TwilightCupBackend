@@ -12,7 +12,7 @@ from logging import Logger, getLogger
 from typing import TYPE_CHECKING, Literal
 
 from . import i18n, scoring
-from .controllers import player_running_conflict
+from .controllers import player_running_conflict, resolve_pick_logo_url
 from .datatypes import (
     Attempt,
     AttemptStatus,
@@ -34,7 +34,6 @@ from .datatypes import (
     SystemEvent,
     now_ts,
 )
-from .storage import Storage
 from .protocol import (
     PRELOAD_CAP,
     PreloadReportStatus,
@@ -57,6 +56,7 @@ from .protocol import (
     SrvSubsegmentSample,
     SrvVerdictEdit,
 )
+from .storage import Storage
 from .stores import SubsegmentSample
 from .timer_service import CountdownTimer
 
@@ -141,8 +141,8 @@ class MatchEngine:
     ) -> None:
         self.cm = cm
         self.db = db
-        # 对象存储（可选）：WS 下发的回合 pick 按展示图 key 签公开 URL，
-        # 与 REST 输出层（MatchOut/MappoolOut）同口径
+        # 对象存储（可选）：WS 下发的回合 pick 签展示图公开 URL（pick 自有优先、
+        # 按合集关卡回退），与 REST 输出层（MatchOut/MappoolOut）同口径
         self.storage = storage
         self.logger = logger or getLogger("MatchEngine")
 
@@ -627,9 +627,10 @@ class MatchEngine:
         lv = self.db.levels.get(level_id)
         return lv.name if lv is not None else level_id
 
-    def _logo_url(self, key: str | None) -> str | None:
-        """展示图 object key → 公开 URL（固定 URL 永久有效）；无 storage / 无 key 返回 None。"""
-        return self.storage.public_url(key) if self.storage else None
+    def _pick_logo_url(self, pick: Pick) -> str | None:
+        """选图展示图公开 URL：pick 自有 logo 优先，无则按合集关卡回退
+        （终点关的 Level.logo，口径见 controllers.resolve_pick_logo_url）。"""
+        return resolve_pick_logo_url(pick, self.db, self.storage)
 
     def _pending_pick_enriched(self, store: MatchStore, pick: Pick) -> Pick:
         """按 pending 裁剪合并出下发的 pick（pick_announced 与 round_start 共用）。
@@ -638,7 +639,8 @@ class MatchEngine:
         见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
         single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
         Match.scoring_method 建赛时定、必填，恒非 None）。
-        logo_url 按展示图 key 签发（导播场景展示图用；图池原件不签，REST 输出层同口径）。
+        logo_url 签展示图公开 URL（pick 自有 logo 优先，无则按合集关卡回退
+        Level.logo；导播场景展示图用，图池原件不动，REST 输出层同口径）。
         """
         return pick.model_copy(
             update={
@@ -649,7 +651,7 @@ class MatchEngine:
                     else pick.retry_count
                 ),
                 "single_scoring": store.match.scoring_method.name.lower(),
-                "logo_url": self._logo_url(pick.logo),
+                "logo_url": self._pick_logo_url(pick),
             }
         )
 
@@ -1334,7 +1336,7 @@ class MatchEngine:
         store.round_counter += 1
         pick = old_record.pick_snapshot
         # 旧快照可能早于「WS pick 签 logo_url」（恒 None），重签一次供重发
-        pick = pick.model_copy(update={"logo_url": self._logo_url(pick.logo)})
+        pick = pick.model_copy(update={"logo_url": self._pick_logo_url(pick)})
         new_record = RoundRecord(
             match_id=store.id,
             round_no=store.round_counter,
