@@ -21,7 +21,8 @@ import hashlib
 import random
 import time
 import urllib.parse
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from classy_fastapi import Routable, get
@@ -146,7 +147,10 @@ async def _get_room_play_info(room_id: int) -> tuple[dict[str, Any], dict[str, A
     except ValueError as exc:
         raise HTTPException(502, "B站直播接口响应不是有效 JSON") from exc
     if obj.get("code") != 0:
-        raise HTTPException(502, f"B站直播接口错误：{obj.get('code')} {obj.get('message')}")
+        raise HTTPException(
+            502,
+            f"B站直播接口错误：{obj.get('code')} {obj.get('message')}",
+        )
     data = obj.get("data") or {}
     return data, obj
 
@@ -205,7 +209,11 @@ async def _pick_flv_url(room_id: int) -> tuple[str, dict[str, Any]]:
     if not candidates:
         candidates = url_infos
     url_info = candidates[random.randrange(len(candidates))]
-    full_url = url_info.get("host", "") + best.get("base_url", "") + url_info.get("extra", "")
+    full_url = (
+        url_info.get("host", "")
+        + best.get("base_url", "")
+        + url_info.get("extra", "")
+    )
     return full_url, best
 
 
