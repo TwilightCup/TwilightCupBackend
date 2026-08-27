@@ -137,6 +137,22 @@ class ClientSubsegmentHit(BaseModel):
     t_ms: int  # 命中时刻该选手计时器时间线上的总时间（RoundTotalMs）
 
 
+class ClientLiveTime(BaseModel):
+    """选手端实时计时上报（每秒一次，随 subsegment 采样节拍；当前回合有效）。
+
+    total_ms/segment_ms 取自选手端注册的真实计时器（TwilightTimer）的
+    RoundTotalMs/CurrentSegmentMs；level_index 为其当前所在合集关卡。
+    仅中转裁判/导播（选手间互不发，避免对手进度实时干扰）。
+    """
+
+    model_config = _cfg
+    type: Literal["live_time"] = "live_time"
+    round_id: str
+    level_index: int
+    total_ms: int
+    segment_ms: int
+
+
 class ClientRefereeMarkPrep(BaseModel):
     model_config = _cfg
     type: Literal["referee_mark_prep"] = "referee_mark_prep"
@@ -265,6 +281,7 @@ ClientMessage = Annotated[
     | ClientPreloadReport
     | ClientSubsegmentSample
     | ClientSubsegmentHit
+    | ClientLiveTime
     | ClientRefereeMarkPrep
     | ClientRefereeSelectPick
     | ClientRefereeManualStart
@@ -481,6 +498,21 @@ class SrvSubsegmentGap(BaseModel):
     gap_ms: int
 
 
+class SrvLiveTime(BaseModel):
+    """选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）。
+
+    服务端按席暂存最近一条：IN_ROUND 期间裁判/导播晚连时握手补发双方。
+    """
+
+    model_config = _cfg
+    type: Literal["live_time"] = "live_time"
+    seat: str
+    round_id: str
+    level_index: int
+    total_ms: int
+    segment_ms: int
+
+
 class SrvRoundResult(BaseModel):
     model_config = _cfg
     type: Literal["round_result"] = "round_result"
@@ -595,6 +627,7 @@ ServerMessage = (
     | SrvLevelTimeUpdate
     | SrvSubsegmentSample
     | SrvSubsegmentGap
+    | SrvLiveTime
     | SrvRoundResult
     | SrvCumulativeScore
     | SrvMatchEnd
