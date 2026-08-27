@@ -24,6 +24,7 @@ from .datatypes import (
     MatchLog,
     MatchStatus,
     RoundRecord,
+    SpeedrunCacheDoc,
     SystemEvent,
     Tournament,
 )
@@ -232,3 +233,10 @@ class Fixtures(Repository[Fixture]):
                 ]
             }
         )
+
+
+class SpeedrunCaches(Repository[SpeedrunCacheDoc]):
+    """speedrun.com 代理响应持久化缓存（主键为 key 的 sha256，见代理层）。"""
+
+    def __init__(self, database: Database) -> None:
+        super().__init__(database, "speedrun_cache", SpeedrunCacheDoc)

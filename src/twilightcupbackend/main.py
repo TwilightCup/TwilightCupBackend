@@ -53,7 +53,8 @@ _TAGS: list[dict[str, str]] = [
     {
         "name": "speedrun",
         "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与"
-        "项目信息场景的选项/榜单数据源",
+        "项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），"
+        "支持 auto/cached/refresh 三模式（前端 SWR）",
     },
 ]
 

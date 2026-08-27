@@ -2868,7 +2868,7 @@
           "speedrun"
         ],
         "summary": "游戏分类与关卡元数据（speedrun.com 代理）",
-        "description": "透传 /games/{id}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。默认 HFF，game_id 可选 Category Extensions 子游戏。缓存 10 分钟。",
+        "description": "透传 /games/{id}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。默认 HFF，game_id 可选 Category Extensions 子游戏。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
         "operationId": "game_meta_speedrun_game_meta_get",
         "parameters": [
           {
@@ -2882,6 +2882,23 @@
               "title": "Game Id"
             },
             "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
           }
         ],
         "responses": {
@@ -2895,6 +2912,9 @@
           },
           "400": {
             "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
           },
           "502": {
             "description": "上游请求失败"
@@ -2918,7 +2938,7 @@
           "speedrun"
         ],
         "summary": "项目排行榜（speedrun.com 代理）",
-        "description": "单关传 level_id 走 IL 端点；var-{变量id}={值id} 为子分类过滤（原样转发）。缓存 60 秒。",
+        "description": "单关传 level_id 走 IL 端点；var-{变量id}={值id} 为子分类过滤（原样转发）。内存缓存 60 秒。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
         "operationId": "leaderboard_speedrun_leaderboard_get",
         "parameters": [
           {
@@ -2975,6 +2995,23 @@
               "title": "Game Id"
             },
             "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
           }
         ],
         "responses": {
@@ -2985,6 +3022,12 @@
                 "schema": {}
               }
             }
+          },
+          "400": {
+            "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
           },
           "502": {
             "description": "上游请求失败"
@@ -3008,7 +3051,7 @@
           "speedrun"
         ],
         "summary": "用户的全部个人最好成绩（代理）",
-        "description": "透传 /users/{id}/personal-bests?game={id}；前端按分类/关卡/子分类过滤出当前项目的 PB（名次可超出榜单 Top N）。game_id 默认 HFF。缓存 60 秒。",
+        "description": "透传 /users/{id}/personal-bests?game={id}；前端按分类/关卡/子分类过滤出当前项目的 PB（名次可超出榜单 Top N）。game_id 默认 HFF。内存缓存 60 秒。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
         "operationId": "pb_speedrun_pb_get",
         "parameters": [
           {
@@ -3033,6 +3076,23 @@
               "title": "Game Id"
             },
             "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
           }
         ],
         "responses": {
@@ -3046,6 +3106,9 @@
           },
           "400": {
             "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
           },
           "502": {
             "description": "上游请求失败"
@@ -3069,7 +3132,7 @@
           "speedrun"
         ],
         "summary": "按用户名/ID 解析 speedrun.com 用户（代理）",
-        "description": "透传 /users?lookup=；找不到时上游返回空 data。缓存 10 分钟。",
+        "description": "透传 /users?lookup=；找不到时上游返回空 data。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
         "operationId": "user_speedrun_user_get",
         "parameters": [
           {
@@ -3082,6 +3145,23 @@
               "title": "Lookup"
             },
             "description": "用户名或 8 位用户 id"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
           }
         ],
         "responses": {
@@ -3092,6 +3172,9 @@
                 "schema": {}
               }
             }
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
           },
           "502": {
             "description": "上游请求失败"
@@ -3115,7 +3198,7 @@
           "speedrun"
         ],
         "summary": "分类/关卡的子分类变量（speedrun.com 代理）",
-        "description": "level_id 优先走 /levels/{id}/variables，否则 /categories/{id}/variables。缓存 10 分钟。",
+        "description": "level_id 优先走 /levels/{id}/variables，否则 /categories/{id}/variables。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
         "operationId": "variables_speedrun_variables_get",
         "parameters": [
           {
@@ -3153,6 +3236,23 @@
               "title": "Level Id"
             },
             "description": "关卡 id（优先）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
           }
         ],
         "responses": {
@@ -3167,8 +3267,77 @@
           "400": {
             "description": "category_id 与 level_id 均缺失"
           },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
           "502": {
             "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bilibili/live/stream": {
+      "get": {
+        "tags": [
+          "bilibili"
+        ],
+        "summary": "B站直播 FLV 同源代理流",
+        "description": "后端以 B站要求的 Referer/Origin/UA 拉取 HTTP-FLV 并转发；前端用 mpegts.js 播放同源流。需 ?token= 传导播/裁判/管理 JWT。",
+        "operationId": "stream_bilibili_live_stream_get",
+        "parameters": [
+          {
+            "name": "room_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "B站直播间号",
+              "title": "Room Id"
+            },
+            "description": "B站直播间号"
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "导播/裁判/管理 JWT",
+              "title": "Token"
+            },
+            "description": "导播/裁判/管理 JWT"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效令牌"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "直播间未开播"
+          },
+          "502": {
+            "description": "B站接口/流地址错误"
           },
           "422": {
             "description": "Validation Error",
@@ -5867,8 +6036,12 @@
       "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细"
     },
     {
+      "name": "bilibili",
+      "description": "B站直播流同源代理（导播选手画面）：以 B站要求的请求头拉取 HTTP-FLV 并转发给前端 mpegts.js"
+    },
+    {
       "name": "speedrun",
-      "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与项目信息场景的选项/榜单数据源"
+      "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），支持 auto/cached/refresh 三模式（前端 SWR）"
     }
   ]
 }

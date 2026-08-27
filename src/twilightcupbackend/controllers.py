@@ -23,10 +23,17 @@ from .databases import (
     Matches,
     MatchLogs,
     Rounds,
+    SpeedrunCaches,
     SystemEvents,
     Tournaments,
 )
-from .datatypes import DEFAULT_TOURNAMENT_ID, Pick, Tournament, TournamentFormat
+from .datatypes import (
+    DEFAULT_TOURNAMENT_ID,
+    SPEEDRUN_CACHE_RETENTION_S,
+    Pick,
+    Tournament,
+    TournamentFormat,
+)
 from .storage import Storage
 
 
@@ -61,6 +68,7 @@ class DBController:
         self.levels = Levels(db)
         self.tournaments = Tournaments(db)
         self.fixtures = Fixtures(db)
+        self.speedrun_cache = SpeedrunCaches(db)
 
     def ensure_indexes(self) -> None:
         """创建常用索引（幂等）。"""
@@ -88,6 +96,10 @@ class DBController:
         )
         self.fixtures.collection.create_index([("tournament_id", 1), ("status", 1)])
         self.fixtures.collection.create_index("match_id")
+        # speedrun.com 代理持久化缓存：TTL 索引按 fetched_at 清理（7 天）
+        self.speedrun_cache.collection.create_index(
+            "fetched_at", expireAfterSeconds=SPEEDRUN_CACHE_RETENTION_S
+        )
 
     def ensure_default_tournament(self) -> None:
         """确保默认赛事存在（固定主键，幂等），并回填存量孤立比赛。

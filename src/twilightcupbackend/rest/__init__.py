@@ -33,7 +33,7 @@ def register_routes(app: FastAPI, db: DBController, settings: Settings) -> None:
     app.include_router(TournamentController(db, cm, storage).router)
     app.include_router(MeController(db, cm, storage).router)
     app.include_router(LogController(db).router)
-    app.include_router(SpeedrunProxyController().router)
+    app.include_router(SpeedrunProxyController(db).router)
     app.include_router(BilibiliProxyController().router)
     if storage is not None:
         app.include_router(UploadController(db, storage).router)

@@ -612,3 +612,28 @@ class Fixture(Document):
     created_at: datetime = Field(default_factory=now_ts)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# speedrun.com 代理持久化缓存
+# ---------------------------------------------------------------------------
+
+# Mongo TTL 保留时长（fetched_at 起算，防集合膨胀；前端 SWR 的 stale 层）
+SPEEDRUN_CACHE_RETENTION_S = 7 * 24 * 3600
+
+# 缓存来源端点（与 speedrun_proxy 各端点一一对应）
+SpeedrunCacheKind = Literal["game_meta", "variables", "leaderboard", "user", "pb"]
+
+
+class SpeedrunCacheDoc(Document):
+    """speedrun.com 代理响应的持久化缓存（每个速通项目一文档）。
+
+    主键用 ``sha256(key)[:32]`` 确定性生成（见 speedrun_proxy._doc_id），
+    同一上游 URL 恒定落同一文档，写入即幂等 upsert。key 即上游完整 URL，
+    天然按分类/关卡/子分类变量/top/游戏区分存储。
+    """
+
+    key: str  # 上游完整 URL（httpx 规范化）；params 顺序即 key 的一部分
+    kind: SpeedrunCacheKind
+    data: Any  # 上游原文 JSON（纯 JSON 类型，BSON 原样往返）
+    fetched_at: datetime = Field(default_factory=now_ts)
