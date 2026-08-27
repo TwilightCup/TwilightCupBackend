@@ -13,7 +13,7 @@ from fastapi import WebSocket
 
 from .config import settings
 from .datatypes import Match, MatchPhase, Seat
-from .protocol import PreloadStatus, SrvPickAnnounced
+from .protocol import PreloadStatus, SrvLiveTime, SrvPickAnnounced
 from .timer_service import CountdownTimer, CounterTimer
 
 
@@ -86,6 +86,8 @@ class MatchStore:
         self.subsegments: dict[tuple[Seat, int, int], SubsegmentSample] = {}
         # 采样平面命中：键 = (穿越方, level_index, seq) → 命中时刻 t_ms（仅首次）。
         self.subsegment_hits: dict[tuple[Seat, int, int], int] = {}
+        # 选手实时计时（每秒上报）：按席暂存最近一条，裁判/导播晚连时握手补发。
+        self.live_times: dict[Seat, SrvLiveTime] = {}
         # 裁判独立倒计时器（每比赛至多一个）
         self.counter_timer: CounterTimer | None = None
         # 比赛开始倒计时（auto 可被取消 / manual 不可）
@@ -132,9 +134,11 @@ class MatchStore:
         self.b_ready = False
 
     def reset_subsegments(self) -> None:
-        """清空本回合分段采样与命中记录（begin_prep / _begin_round 时调用）。"""
+        """清空本回合的回合级实时遥测（begin_prep / _begin_round 时调用）：
+        分段采样、命中记录与实时计时暂存。"""
         self.subsegments.clear()
         self.subsegment_hits.clear()
+        self.live_times.clear()
 
 
 class MatchRegistry:

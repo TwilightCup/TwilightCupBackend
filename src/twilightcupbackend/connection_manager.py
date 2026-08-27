@@ -40,6 +40,7 @@ from .protocol import (
     ClientForfeitSignal,
     ClientHeartbeat,
     ClientLevelTimeUpload,
+    ClientLiveTime,
     ClientMessage,
     ClientPreloadReport,
     ClientProjectComplete,
@@ -95,6 +96,7 @@ _PAUSED_BLOCKED_ACTIONS: tuple[type[ClientMessage], ...] = (
     ClientPreloadReport,
     ClientSubsegmentSample,
     ClientSubsegmentHit,
+    ClientLiveTime,
 )
 
 # exclusive 接管（last-wins takeover）：新连接以 exclusive=1 要求独占其身份 key
@@ -345,6 +347,15 @@ class ConnectionManager:
                     seat=player_seat.name, online=player_seat in store.connections
                 ),
             )
+        # 回合中裁判/导播晚连/重连：补发双方最近一次实时计时（每秒上报、按席
+        # 暂存；overlay 晚开也能立即对齐计时显示）。选手席不补（互不感知对手进度）。
+        if (
+            store.phase == MatchPhase.IN_ROUND
+            and seat in (Seat.REFEREE, Seat.DIRECTOR)
+            and store.live_times
+        ):
+            for live in store.live_times.values():
+                await self._send(conn, live)
         # 座席在线状态广播（backend-seat-presence）：选手连入通知全员——
         # 系统提示连本人也发（system 消息 = Twilight 前缀，各端必须逐字一致，
         # 不排除任何在席连接）；seat_state 广播仍排除本人（上方已补发全量
@@ -603,6 +614,11 @@ class ConnectionManager:
                     await engine.on_subsegment_hit(
                         conn.match_id, conn.seat, rid, li, sq, t
                     )
+            case ClientLiveTime(
+                round_id=rid, level_index=li, total_ms=tm, segment_ms=sm
+            ):
+                if await self._require_player(conn):
+                    await engine.on_live_time(conn.match_id, conn.seat, rid, li, tm, sm)
             case ClientLevelTimeUpload(
                 round_id=rid,
                 level_index=li,

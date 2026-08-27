@@ -51,6 +51,10 @@ DESCRIPTIONS: dict[str, str] = {
     "纯内存回合级数据，不落库、回合结束清空。",
     "ClientSubsegmentHit": "选手穿越对手采样平面时上报（仅 MULTI 回合）；"
     "t_ms 为命中时刻自己计时器时间线上的总时间，首次命中有效（重复忽略）。",
+    "ClientLiveTime": "选手端实时计时上报（每秒一次，随 subsegment 采样节拍）："
+    "total_ms/segment_ms 取自其注册的真实计时器（TwilightTimer）的 "
+    "RoundTotalMs/CurrentSegmentMs，level_index 为当前所在合集关卡。仅中转"
+    "裁判/导播，选手间互不转发。",
     "ClientRefereeMarkPrep": "裁判标记进入回合准备阶段。",
     "ClientRefereeSelectPick": "裁判从图池选定本回合选图；CT 类别可随消息提交词条"
     "（0-ct_tag_count 个，服务端校验枚举/互斥/数量）。",
@@ -105,6 +109,8 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvSubsegmentGap": "实时时间差广播（双方选手 + 裁判 + 导播；overlay 用）："
     "某选手穿越对方采样平面时，``gap_ms = hit_ms - sample_ms``，>0 = 穿越方"
     "落后，可为负。",
+    "SrvLiveTime": "选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）："
+    "服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方。",
     "SrvRoundResult": "本回合结算（判定与双方成绩）。",
     "SrvCumulativeScore": "累计比分。",
     "SrvMatchEnd": "比赛结束，宣告胜方（判定落定且比分达到取胜分数时自动触发）。",

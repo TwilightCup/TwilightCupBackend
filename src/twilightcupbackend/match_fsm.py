@@ -43,6 +43,7 @@ from .protocol import (
     SrvCumulativeScore,
     SrvError,
     SrvLevelTimeUpdate,
+    SrvLiveTime,
     SrvMatchEnd,
     SrvPhaseChange,
     SrvPickAnnounced,
@@ -986,6 +987,37 @@ class MatchEngine:
                 gap_ms=t_ms - sample.t_ms,
             ),
         )
+
+    async def on_live_time(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        total_ms: int,
+        segment_ms: int,
+    ) -> None:
+        """选手实时计时上报（每秒）：按席暂存最近一条并中转裁判/导播。
+
+        选手间互不转发（对手实时进度不下发选手端，避免干扰）；裁判/导播
+        晚连时由握手补发暂存值（见 connection_manager.connect）。
+        """
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        live = SrvLiveTime(
+            seat=seat.name,
+            round_id=round_id,
+            level_index=level_index,
+            total_ms=total_ms,
+            segment_ms=segment_ms,
+        )
+        store.live_times[seat] = live  # 每席只留最近一条（握手补发用）
+        await self.cm.send_to_seat(match_id, Seat.REFEREE, live)
+        await self.cm.send_to_seat(match_id, Seat.DIRECTOR, live)
 
     async def _broadcast_status(
         self, match_id: str, seat: Seat, state: PlayerRoundState
