@@ -36,6 +36,38 @@ class AccountController(Routable):
         super().__init__(prefix="/admin/accounts", tags=["accounts"])
         self.db = db
 
+    def _admin_count(self) -> int:
+        """系统中 ADMIN 角色账号数（末位管理员保护用）。"""
+        return sum(1 for a in self.db.accounts.find() if AccountType.ADMIN in a.roles)
+
+    def _reference_conflicts(self, account_id: str) -> list[str]:
+        """账号仍被业务数据引用的冲突清单（删除前完整性检查）。
+
+        口径与 /me/matches 一致：未归档比赛（含 ENDED 未归档）算引用，
+        已归档比赛视为收纳完毕不再阻挡；赛事成员池与对阵节点恒算引用
+        （历史赛程数据完整性）。
+        """
+        refs: list[str] = []
+        member_matches = self.db.matches.find_by_member(account_id)
+        matches = [m for m in member_matches if m.archived_at is None]
+        if matches:
+            refs.append(f"{len(matches)} 场未归档比赛")
+        tournaments = [
+            t
+            for t in self.db.tournaments.find()
+            if account_id in (*t.participant_ids, *t.referee_ids, *t.director_ids)
+        ]
+        if tournaments:
+            refs.append(f"{len(tournaments)} 个赛事")
+        fixtures = [
+            f
+            for f in self.db.fixtures.find()
+            if account_id in (f.player_a_id, f.player_b_id, f.winner_id)
+        ]
+        if fixtures:
+            refs.append(f"{len(fixtures)} 个对阵节点")
+        return refs
+
     @post(
         "",
         response_model=AccountOut,
@@ -106,10 +138,12 @@ class AccountController(Routable):
         "/{account_id}",
         response_model=AccountOut,
         summary="修改账号",
-        description="按字段局部更新（display_name / password / type，传哪个改哪个）。",
+        description="按字段局部更新（display_name / password / roles / speedrun_id，"
+        "传哪个改哪个）。保护：不能移除系统中最后一个管理员的角色"
+        "（防先降级再删除绕过账号删除守卫）。",
         responses={
             401: {"description": "未携带有效令牌"},
-            403: {"description": "需要管理员权限"},
+            403: {"description": "需要管理员权限 / 移除最后一个管理员角色"},
             404: {"description": "账号不存在"},
             409: {"description": "用户名冲突"},
         },
@@ -128,7 +162,16 @@ class AccountController(Routable):
         if body.password is not None:
             account.password_hash = hash_password(body.password)
         if body.roles is not None:
-            account.roles = _normalize_roles(body.roles)
+            new_roles = _normalize_roles(body.roles)
+            if (
+                AccountType.ADMIN in account.roles
+                and AccountType.ADMIN not in new_roles
+                and self._admin_count() <= 1
+            ):
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN, "不能移除最后一个管理员角色"
+                )
+            account.roles = new_roles
         if body.speedrun_id is not None:
             account.speedrun_id = body.speedrun_id.strip() or None
         try:
@@ -141,17 +184,31 @@ class AccountController(Routable):
         "/{account_id}",
         status_code=status.HTTP_204_NO_CONTENT,
         summary="删除账号",
+        description="按序校验（命中即拒）：不能删当前登录账号；不能删 ADMIN 角色"
+        "账号（管理员只能改角色/改密码）；账号仍被引用则 409（未归档比赛 / "
+        "赛事成员池 / 对阵节点，msg 列出冲突类型，先处理引用再删）。",
         responses={
             401: {"description": "未携带有效令牌"},
-            403: {"description": "需要管理员权限"},
+            403: {"description": "需要管理员权限 / 删自己 / 删管理员账号"},
             404: {"description": "账号不存在"},
+            409: {"description": "账号仍被比赛/赛事/对阵引用"},
         },
     )
     def remove(
         self,
         account_id: str,
-        _: Account = Depends(require_admin),
+        admin: Account = Depends(require_admin),
     ) -> None:
-        if self.db.accounts.get(account_id) is None:
+        account = self.db.accounts.get(account_id)
+        if account is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "账号不存在")
+        if account.id == admin.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "不能删除当前登录账号")
+        if AccountType.ADMIN in account.roles:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "不能删除管理员账号")
+        refs = self._reference_conflicts(account.id)
+        if refs:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"账号仍被引用：{' / '.join(refs)}"
+            )
         self.db.accounts.delete(account_id)

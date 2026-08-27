@@ -241,7 +241,7 @@
           "accounts"
         ],
         "summary": "删除账号",
-        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "description": "按序校验（命中即拒）：不能删当前登录账号；不能删 ADMIN 角色账号（管理员只能改角色/改密码）；账号仍被引用则 409（未归档比赛 / 赛事成员池 / 对阵节点，msg 列出冲突类型，先处理引用再删）。",
         "operationId": "remove_admin_accounts__account_id__delete",
         "parameters": [
           {
@@ -262,10 +262,13 @@
             "description": "未携带有效令牌"
           },
           "403": {
-            "description": "需要管理员权限"
+            "description": "需要管理员权限 / 删自己 / 删管理员账号"
           },
           "404": {
             "description": "账号不存在"
+          },
+          "409": {
+            "description": "账号仍被比赛/赛事/对阵引用"
           },
           "422": {
             "description": "Validation Error",
@@ -284,7 +287,7 @@
           "accounts"
         ],
         "summary": "修改账号",
-        "description": "按字段局部更新（display_name / password / type，传哪个改哪个）。",
+        "description": "按字段局部更新（display_name / password / roles / speedrun_id，传哪个改哪个）。保护：不能移除系统中最后一个管理员的角色（防先降级再删除绕过账号删除守卫）。",
         "operationId": "update_admin_accounts__account_id__patch",
         "parameters": [
           {
@@ -322,7 +325,7 @@
             "description": "未携带有效令牌"
           },
           "403": {
-            "description": "需要管理员权限"
+            "description": "需要管理员权限 / 移除最后一个管理员角色"
           },
           "404": {
             "description": "账号不存在"

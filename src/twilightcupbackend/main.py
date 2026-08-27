@@ -46,6 +46,11 @@ _TAGS: list[dict[str, str]] = [
         "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细",
     },
     {
+        "name": "bilibili",
+        "description": "B站直播流同源代理（导播选手画面）：以 B站要求的请求头拉取 "
+        "HTTP-FLV 并转发给前端 mpegts.js",
+    },
+    {
         "name": "speedrun",
         "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与"
         "项目信息场景的选项/榜单数据源",
