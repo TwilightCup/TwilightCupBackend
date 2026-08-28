@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from logging import Logger, getLogger
 from typing import TYPE_CHECKING, Literal
 
@@ -78,6 +79,13 @@ CT_CATEGORY = "CT"
 TAGGED_CATEGORIES = frozenset({"CT", "EX", "CP"})
 # 重试次数改由裁判选图时指定的类别（单关必填）
 REFEREE_RETRY_CATEGORIES = frozenset({"CT", "EX"})
+# 分段命中结算静默期（秒，settled-event 模型）：同一平面的穿越可多次上报，
+# 最后一次穿越后静默该时长无再穿越即结算广播（有效时刻取最后一次穿越，
+# 擦边往返的早触发会被真实穿越顶掉）。测试可 monkeypatch 调小。
+SUBSEGMENT_SETTLE_QUIET_S = 0.5
+# 每平面保留的穿越事件数上限（防客户端异常刷量；保留最新，旧的淘汰——
+# 迟到的真实穿越必须能进列表）。
+SUBSEGMENT_HIT_EVENTS_CAP = 8
 
 
 def _validate_pick_tags(
@@ -958,7 +966,12 @@ class MatchEngine:
         seq: int,
         t_ms: int,
     ) -> None:
-        """选手穿越对方采样平面：记录首次命中并向全场广播实时时间差。"""
+        """选手穿越对方采样平面（同一平面可多次上报）：记录事件并调度静默结算。
+
+        结算（``_settle_subsegment``）后才广播时间差，入口只做四道门控：
+        活跃回合、MULTI、样本存在、不低于已结算游标（迟到的乱序低键直接
+        忽略，导播画面单调不回跳）。
+        """
         store = self.cm.registry.get(match_id)
         if store is None:
             return
@@ -968,12 +981,69 @@ class MatchEngine:
         if record.pick_snapshot.type != PickType.MULTI:
             return
         owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        if store.subsegments.get((owner, level_index, seq)) is None:
+            return  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
+        frontier = store.subsegment_frontier.get(seat)
+        if frontier is not None and (level_index, seq) < frontier:
+            return  # 已结算游标之前：迟到/乱序事件不再出现在画面上
+        key = (seat, level_index, seq)
+        events = store.subsegment_hits.setdefault(key, [])
+        events.append(t_ms)
+        if len(events) > SUBSEGMENT_HIT_EVENTS_CAP:
+            del events[:-SUBSEGMENT_HIT_EVENTS_CAP]
+        self._schedule_settle(store, match_id, seat, level_index, seq)
+
+    def _schedule_settle(
+        self, store: MatchStore, match_id: str, seat: Seat, level_index: int, seq: int
+    ) -> None:
+        """（重）调度该平面的静默结算任务：新事件到达即重置静默窗。"""
+        key = (seat, level_index, seq)
+        stale = store.subsegment_settle_tasks.pop(key, None)
+        if stale is not None:
+            stale.cancel()
+        task = asyncio.get_running_loop().create_task(
+            self._settle_subsegment(match_id, seat, level_index, seq)
+        )
+        store.subsegment_settle_tasks[key] = task
+
+    async def _settle_subsegment(
+        self, match_id: str, seat: Seat, level_index: int, seq: int
+    ) -> None:
+        """静默期已过且无再穿越：结算该平面并广播实时时间差。
+
+        有效时刻 = 最后一次穿越（擦边往返的早触发被真实穿越顶掉）；低于
+        已结算游标的迟到键丢弃不播，等于游标 = 结算后再次穿越（环路折返）
+        → 同键重播修正（amend，前端按键覆盖取最新）；高于游标 → 广播并
+        推进游标。回合已离开 IN_ROUND → 迟到结算丢弃。
+        """
+        await asyncio.sleep(SUBSEGMENT_SETTLE_QUIET_S)
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        key = (seat, level_index, seq)
+        if store.subsegment_settle_tasks.get(key) is not asyncio.current_task():
+            return  # 已被更新的事件重新调度（或整场重置），本轮作废
+        store.subsegment_settle_tasks.pop(key, None)
+        if store.phase != MatchPhase.IN_ROUND:
+            store.subsegment_hits.pop(key, None)
+            return
+        events = store.subsegment_hits.get(key)
+        if not events:
+            return
+        frontier = store.subsegment_frontier.get(seat)
+        if frontier is not None and (level_index, seq) < frontier:
+            store.subsegment_hits.pop(key, None)  # 更高的键已结算：低键不再露面
+            return
+        owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
         sample = store.subsegments.get((owner, level_index, seq))
-        if sample is None:  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
+        if sample is None:
+            store.subsegment_hits.pop(key, None)
             return
-        if (seat, level_index, seq) in store.subsegment_hits:  # 首次命中有效
+        round_id = store.current_round_id
+        if round_id is None:
             return
-        store.subsegment_hits[(seat, level_index, seq)] = t_ms
+        hit_ms = events[-1]
+        store.subsegment_frontier[seat] = (level_index, seq)
         await self.cm.broadcast_match(
             match_id,
             SrvSubsegmentGap(
@@ -983,8 +1053,8 @@ class MatchEngine:
                 seat=owner.name,
                 sample_ms=sample.t_ms,
                 hit_seat=seat.name,
-                hit_ms=t_ms,
-                gap_ms=t_ms - sample.t_ms,
+                hit_ms=hit_ms,
+                gap_ms=hit_ms - sample.t_ms,
             ),
         )
 

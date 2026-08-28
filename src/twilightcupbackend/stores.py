@@ -7,6 +7,7 @@ M4 仅含连接与基础状态；M6/M7 会补充回合、计时器、累计比�
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from fastapi import WebSocket
@@ -84,8 +85,20 @@ class MatchStore:
         # 分段采样（MULTI 实时差距跟踪；纯内存，回合结束即弃）：键 = (采样方,
         # level_index, seq)，dict 保持插入序 → 重连回放天然按时间顺序。
         self.subsegments: dict[tuple[Seat, int, int], SubsegmentSample] = {}
-        # 采样平面命中：键 = (穿越方, level_index, seq) → 命中时刻 t_ms（仅首次）。
-        self.subsegment_hits: dict[tuple[Seat, int, int], int] = {}
+        # 采样平面穿越事件（同一平面可多次上报，settled-event 结算模型）：键 =
+        # (穿越方, level_index, seq) → 穿越时刻列表（只留最新若干条，见
+        # match_fsm.SUBSEGMENT_HIT_EVENTS_CAP）；结算取最后一条，结算后保留
+        # 供后续再穿越追加（amend 修正）。
+        self.subsegment_hits: dict[tuple[Seat, int, int], list[int]] = {}
+        # 已结算广播的进度游标：穿越方 → 最高 (level_index, seq)。低于它的事件
+        # 直接忽略，保证导播画面单调不回跳（曲折路线乱序穿越的治理核心）。
+        self.subsegment_frontier: dict[Seat, tuple[int, int]] = {}
+        # 静默结算任务：键同 subsegment_hits。最后一次穿越后静默期（见
+        # match_fsm.SUBSEGMENT_SETTLE_QUIET_S）无再穿越即结算广播；新事件到达
+        # 会取消旧任务重新起算。
+        self.subsegment_settle_tasks: dict[
+            tuple[Seat, int, int], asyncio.Task[None]
+        ] = {}
         # 选手实时计时（每秒上报）：按席暂存最近一条，裁判/导播晚连时握手补发。
         self.live_times: dict[Seat, SrvLiveTime] = {}
         # 裁判独立倒计时器（每比赛至多一个）
@@ -135,9 +148,13 @@ class MatchStore:
 
     def reset_subsegments(self) -> None:
         """清空本回合的回合级实时遥测（begin_prep / _begin_round 时调用）：
-        分段采样、命中记录与实时计时暂存。"""
+        分段采样、穿越事件、结算游标/任务与实时计时暂存。"""
+        for task in self.subsegment_settle_tasks.values():
+            task.cancel()
+        self.subsegment_settle_tasks.clear()
         self.subsegments.clear()
         self.subsegment_hits.clear()
+        self.subsegment_frontier.clear()
         self.live_times.clear()
 
 

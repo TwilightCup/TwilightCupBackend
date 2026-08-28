@@ -127,7 +127,12 @@ class ClientSubsegmentSample(BaseModel):
 
 
 class ClientSubsegmentHit(BaseModel):
-    """选手穿越对手采样平面时上报（仅 MULTI 回合；首次命中有效，重复忽略）。"""
+    """选手穿越对手采样平面时上报（仅 MULTI 回合；同一平面可多次上报）。
+
+    服务端按 settled-event 模型结算：某平面最后一次穿越后静默期（约 0.5s）
+    内无再穿越才广播 ``subsegment_gap``，有效时刻取最后一次穿越（擦边往返
+    的早触发被真实穿越顶掉）；低于已结算进度游标的迟到事件直接忽略。
+    """
 
     model_config = _cfg
     type: Literal["subsegment_hit"] = "subsegment_hit"
@@ -483,7 +488,9 @@ class SrvSubsegmentSample(BaseModel):
 class SrvSubsegmentGap(BaseModel):
     """实时时间差广播（双方选手 + 裁判 + 导播；overlay 用）。
 
-    gap_ms = hit_ms - sample_ms，>0 = 穿越方落后，可为负。
+    gap_ms = hit_ms - sample_ms，>0 = 穿越方落后，可为负。仅在平面穿越
+    结算（静默期无再穿越）后发出；同一 (hit_seat, level_index, seq) 可能
+    再次收到（结算后再次穿越的修正/amend）——前端按键覆盖取最新。
     """
 
     model_config = _cfg

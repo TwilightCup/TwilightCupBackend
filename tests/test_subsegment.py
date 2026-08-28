@@ -1,8 +1,9 @@
 """MULTI 回合分段采样（subsegment）实时差距跟踪验收测试。
 
 fixture 的 start_countdown_delay=2；图池 ML1（多关，L1+L2）、CT01（单关，需
-retry）。采样中转只达对方 seat，命中向全场广播时间差；纯内存回合级数据，
-重连经 reconnect_resync 按序补放。
+retry）。采样中转只达对方 seat；命中按 settled-event 模型结算后向全场广播
+时间差（静默期取最后一次穿越、进度游标单调、结算后可 amend 修正），纯内存
+回合级数据，重连经 reconnect_resync 按序补放。
 """
 
 from __future__ import annotations
@@ -12,10 +13,17 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from twilightcupbackend import match_fsm
 from twilightcupbackend.protocol import parse_client_message
 
 PHASE_PREP = 1
 PHASE_IN_ROUND = 3
+
+
+@pytest.fixture(autouse=True)
+def _fast_settle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """结算静默期调小：默认 0.5s 会让每个命中用例都实等半秒。"""
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_SETTLE_QUIET_S", 0.1)
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
@@ -232,8 +240,8 @@ def test_hit_on_stationary_sample(world) -> None:  # type: ignore[no-untyped-def
         assert g["gap_ms"] == 1250
 
 
-def test_hit_once_only(world) -> None:  # type: ignore[no-untyped-def]
-    """同一 (hitter, level, seq) 二次命中 → 不再广播时间差。"""
+def test_hit_recross_amends(world) -> None:  # type: ignore[no-untyped-def]
+    """结算后同平面再次穿越（环路折返）→ 同键重播修正（amend，取新时刻）。"""
     client, _, _, tokens = world
     with (
         client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
@@ -246,9 +254,101 @@ def test_hit_once_only(world) -> None:  # type: ignore[no-untyped-def]
         _sample(ws_a, rid, level=0, seq=0, t_ms=1000)
         _recv_until(ws_b, lambda m: m["type"] == "subsegment_sample")
         _hit(ws_b, rid, level=0, seq=0, t_ms=1500)
-        _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
-        _hit(ws_b, rid, level=0, seq=0, t_ms=9000)  # 重复命中
+        g1 = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g1["hit_ms"] == 1500 and g1["gap_ms"] == 500
+        _hit(ws_b, rid, level=0, seq=0, t_ms=9000)  # 结算后再次穿越
+        g2 = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g2["seq"] == 0 and g2["hit_ms"] == 9000 and g2["gap_ms"] == 8000
+
+
+def test_settle_takes_last_crossing(world) -> None:  # type: ignore[no-untyped-def]
+    """静默期内多次穿越 → 只结算一次，有效时刻取最后一次（擦边早触发被顶掉）。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        _sample(ws_a, rid, level=0, seq=0, t_ms=1000)
+        _recv_until(ws_b, lambda m: m["type"] == "subsegment_sample")
+        _hit(ws_b, rid, level=0, seq=0, t_ms=1500)  # 擦边早触发
+        _hit(ws_b, rid, level=0, seq=0, t_ms=2500)  # 同一静默窗内的真实穿越
+        g = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g["hit_ms"] == 2500 and g["gap_ms"] == 1500
+        # 同窗只结算一次：不再有第二条 gap
         _assert_absent_since_ping(ws_a, ws_a, "subsegment_gap")
+
+
+def test_out_of_order_below_frontier_dropped(world, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """先结算高键，再穿越低键（曲折路线乱序）→ 低键不广播（画面不回跳）；
+    更高键（含跨关）照常推进。"""
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_SETTLE_QUIET_S", 0.3)
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        for seq, t in ((3, 3000), (5, 5000)):
+            _sample(ws_a, rid, level=0, seq=seq, t_ms=t)
+            _recv_until(
+                ws_b,
+                lambda m, seq=seq: m["type"] == "subsegment_sample"
+                and m["seq"] == seq,
+            )
+        _hit(ws_b, rid, level=0, seq=5, t_ms=6100)  # 先穿后面的平面
+        g = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g["seq"] == 5 and g["gap_ms"] == 1100
+        _hit(ws_b, rid, level=0, seq=3, t_ms=4000)  # 再穿前面的 → 低于游标
+        _assert_absent_since_ping(ws_a, ws_a, "subsegment_gap")
+        # 跨关更高键照常结算推进
+        _sample(ws_a, rid, level=1, seq=0, t_ms=9000)
+        _recv_until(
+            ws_b, lambda m: m["type"] == "subsegment_sample" and m["level_index"] == 1
+        )
+        _hit(ws_b, rid, level=1, seq=0, t_ms=10000)
+        g2 = _recv_until(
+            ws_a, lambda m: m["type"] == "subsegment_gap" and m["level_index"] == 1
+        )
+        assert g2["seq"] == 0 and g2["gap_ms"] == 1000
+
+
+def test_graze_selfheal_order(world, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """擦边早触发高键 + 随后正常穿越低键再真实穿越高键 → 画面按 3,4,5 顺序
+    结算，高键有效时刻为真实穿越（早触发从未露面）。"""
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_SETTLE_QUIET_S", 0.3)
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        for seq in (3, 4, 5):
+            _sample(ws_a, rid, level=0, seq=seq, t_ms=1000 * seq)
+        _recv_until(
+            ws_b, lambda m: m["type"] == "subsegment_sample" and m["seq"] == 5
+        )
+        # 同一静默窗内背靠背：擦边 5 → 正常 3、4 → 真实 5
+        _hit(ws_b, rid, level=0, seq=5, t_ms=4900)
+        _hit(ws_b, rid, level=0, seq=3, t_ms=4000)
+        _hit(ws_b, rid, level=0, seq=4, t_ms=4600)
+        _hit(ws_b, rid, level=0, seq=5, t_ms=5800)
+        got = _collect_until(
+            ws_a, lambda m: m["type"] == "subsegment_gap" and m["seq"] == 5
+        )
+        gaps = [m for m in got if m["type"] == "subsegment_gap"]
+        assert [g["seq"] for g in gaps] == [3, 4, 5], gaps
+        assert [g["hit_ms"] for g in gaps] == [4000, 4600, 5800], gaps
+        assert [g["gap_ms"] for g in gaps] == [1000, 600, 800], gaps
 
 
 def test_hit_unknown_sample_ignored(world) -> None:  # type: ignore[no-untyped-def]
