@@ -21,6 +21,7 @@ dependencies = [
     "minio>=7.2",
     "python-multipart>=0.0.32",
     "httpx>=0.28",  # speedrun_proxy 生产代码依赖（服务器纯 uv sync 环境需在主依赖）
+    "yt-dlp>=2025.1.1",  # youtube_proxy 解析 YouTube 直播 HLS 地址
 ]
 
 [project.optional-dependencies]

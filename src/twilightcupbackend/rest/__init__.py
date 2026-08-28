@@ -17,6 +17,7 @@ from .me_controller import MeController
 from .speedrun_proxy import SpeedrunProxyController
 from .tournament_controller import TournamentController
 from .upload_controller import UploadController
+from .youtube_proxy import YouTubeProxyController
 
 __all__ = ["register_routes"]
 
@@ -35,5 +36,6 @@ def register_routes(app: FastAPI, db: DBController, settings: Settings) -> None:
     app.include_router(LogController(db).router)
     app.include_router(SpeedrunProxyController(db).router)
     app.include_router(BilibiliProxyController().router)
+    app.include_router(YouTubeProxyController().router)
     if storage is not None:
         app.include_router(UploadController(db, storage).router)

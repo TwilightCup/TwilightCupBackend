@@ -51,6 +51,11 @@ _TAGS: list[dict[str, str]] = [
         "HTTP-FLV 并转发给前端 mpegts.js",
     },
     {
+        "name": "youtube",
+        "description": "YouTube 直播 HLS 同源代理（导播选手画面）：后端解析直播 "
+        "HLS 地址并转发播放列表与分片，前端用 hls.js 播放，绕开 iframe",
+    },
+    {
         "name": "speedrun",
         "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与"
         "项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），"
