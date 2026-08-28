@@ -1,8 +1,9 @@
 """选手实时计时（live_time）中转验收测试。
 
 fixture 的 start_countdown_delay=2；图池 ML1（多关）。选手每秒上报
-RoundTotalMs/CurrentSegmentMs；仅中转裁判/导播（选手间互不转发），
-按席暂存最近一条，裁判/导播回合中晚连时握手补发。
+RoundTotalMs/CurrentSegmentMs（以及可选 real_time_ms 现实/墙钟时间）；
+仅中转裁判/导播（选手间互不转发），按席暂存最近一条，裁判/导播回合中
+晚连时握手补发。
 """
 
 from __future__ import annotations
@@ -49,16 +50,24 @@ def _drive_to_round(ws_r, ws_a, pick: str = "ML1") -> str:  # type: ignore[no-un
     return rs["round_id"]
 
 
-def _live(ws, rid: str, level: int, total_ms: int, segment_ms: int) -> None:  # type: ignore[no-untyped-def]
-    ws.send_json(
-        {
-            "type": "live_time",
-            "round_id": rid,
-            "level_index": level,
-            "total_ms": total_ms,
-            "segment_ms": segment_ms,
-        }
-    )
+def _live(  # type: ignore[no-untyped-def]
+    ws,
+    rid: str,
+    level: int,
+    total_ms: int,
+    segment_ms: int,
+    real_time_ms: int | None = None,
+) -> None:
+    msg = {
+        "type": "live_time",
+        "round_id": rid,
+        "level_index": level,
+        "total_ms": total_ms,
+        "segment_ms": segment_ms,
+    }
+    if real_time_ms is not None:
+        msg["real_time_ms"] = real_time_ms
+    ws.send_json(msg)
 
 
 def _ping(ws) -> None:  # type: ignore[no-untyped-def]
@@ -88,13 +97,16 @@ def test_live_time_relayed_to_observers_only(world) -> None:  # type: ignore[no-
         for ws in (ws_r, ws_a, ws_b, ws_d):
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
-        _live(ws_a, rid, level=1, total_ms=63210, segment_ms=18430)
+        _live(
+            ws_a, rid, level=1, total_ms=63210, segment_ms=18430, real_time_ms=63720
+        )
         for ws, tag in ((ws_r, "ref"), (ws_d, "dri")):
             m = _recv_until(ws, lambda m: m["type"] == "live_time")
             assert m["seat"] == "PLAYER_A"
             assert m["round_id"] == rid
             assert m["level_index"] == 1
             assert m["total_ms"] == 63210 and m["segment_ms"] == 18430, tag
+            assert m["real_time_ms"] == 63720, tag
         # 发送方无回声，对方选手也不收（对手实时进度不下发选手端）
         _assert_absent_since_ping(ws_a, ws_a, "live_time")
         _assert_absent_since_ping(ws_b, ws_b, "live_time")
@@ -111,9 +123,16 @@ def test_latest_kept_and_replayed_to_late_director(world) -> None:  # type: igno
         for ws in (ws_r, ws_a, ws_b):
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
-        _live(ws_a, rid, level=0, total_ms=1000, segment_ms=1000)
-        _live(ws_a, rid, level=0, total_ms=2000, segment_ms=2000)  # 覆盖
-        _live(ws_b, rid, level=0, total_ms=1500, segment_ms=1500)
+        _live(
+            ws_a, rid, level=0, total_ms=1000, segment_ms=1000, real_time_ms=1100
+        )
+        # 覆盖
+        _live(
+            ws_a, rid, level=0, total_ms=2000, segment_ms=2000, real_time_ms=2200
+        )
+        _live(
+            ws_b, rid, level=0, total_ms=1500, segment_ms=1500, real_time_ms=1600
+        )
         _recv_until(
             ws_r, lambda m: m["type"] == "live_time" and m["seat"] == "PLAYER_B"
         )
@@ -129,7 +148,9 @@ def test_latest_kept_and_replayed_to_late_director(world) -> None:  # type: igno
             got = _collect_until(ws_d, _until_both_seats)
             live = {m["seat"]: m for m in got if m["type"] == "live_time"}
             assert live["PLAYER_A"]["total_ms"] == 2000  # 最新一条，非首条
+            assert live["PLAYER_A"]["real_time_ms"] == 2200
             assert live["PLAYER_B"]["total_ms"] == 1500
+            assert live["PLAYER_B"]["real_time_ms"] == 1600
 
 
 def test_stale_round_ignored(world) -> None:  # type: ignore[no-untyped-def]
@@ -160,7 +181,8 @@ def test_protocol_strict() -> None:
         "total_ms": 100,
         "segment_ms": 50,
     }
-    parse(good)
+    parse(good)  # real_time_ms 可选：旧版计时器不带也合法
+    parse({**good, "real_time_ms": 120})  # 新版计时器附带现实/墙钟时间
     with pytest.raises(ValidationError):
         parse({**good, "extra": 1})
     with pytest.raises(ValidationError):

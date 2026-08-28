@@ -615,10 +615,16 @@ class ConnectionManager:
                         conn.match_id, conn.seat, rid, li, sq, t
                     )
             case ClientLiveTime(
-                round_id=rid, level_index=li, total_ms=tm, segment_ms=sm
+                round_id=rid,
+                level_index=li,
+                total_ms=tm,
+                segment_ms=sm,
+                real_time_ms=rt,
             ):
                 if await self._require_player(conn):
-                    await engine.on_live_time(conn.match_id, conn.seat, rid, li, tm, sm)
+                    await engine.on_live_time(
+                        conn.match_id, conn.seat, rid, li, tm, sm, rt
+                    )
             case ClientLevelTimeUpload(
                 round_id=rid,
                 level_index=li,

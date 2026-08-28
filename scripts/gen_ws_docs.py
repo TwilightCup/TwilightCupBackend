@@ -58,8 +58,9 @@ DESCRIPTIONS: dict[str, str] = {
     "重开该键按当前时刻广播（计时器坠落不清零，数值自带罚时成本）。",
     "ClientLiveTime": "选手端实时计时上报（每秒一次，随 subsegment 采样节拍）："
     "total_ms/segment_ms 取自其注册的真实计时器（TwilightTimer）的 "
-    "RoundTotalMs/CurrentSegmentMs，level_index 为当前所在合集关卡。仅中转"
-    "裁判/导播，选手间互不转发。",
+    "RoundTotalMs/CurrentSegmentMs；real_time_ms 可选，为提供方 Real Time "
+    "现实/墙钟计时（TwilightTimer 实现 IRealtimeTimerProvider 时附带）；"
+    "level_index 为当前所在合集关卡。仅中转裁判/导播，选手间互不转发。",
     "ClientRefereeMarkPrep": "裁判标记进入回合准备阶段。",
     "ClientRefereeSelectPick": "裁判从图池选定本回合选图；CT 类别可随消息提交词条"
     "（0-ct_tag_count 个，服务端校验枚举/互斥/数量）。",
@@ -118,7 +119,8 @@ DESCRIPTIONS: dict[str, str] = {
     "进度更新）——前端展示取最新一条，进度类 UI 需自持最大 seq"
     "（服务端游标不回退）。",
     "SrvLiveTime": "选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）："
-    "服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方。",
+    "服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方；"
+    "real_time_ms 为可选字段，选手端提供方支持现实/墙钟计时时携带。",
     "SrvRoundResult": "本回合结算（判定与双方成绩）。",
     "SrvCumulativeScore": "累计比分。",
     "SrvMatchEnd": "比赛结束，宣告胜方（判定落定且比分达到取胜分数时自动触发）。",

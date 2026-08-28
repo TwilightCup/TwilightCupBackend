@@ -214,7 +214,7 @@
 
 - type：'live_time'
 
-- 选手端实时计时上报（每秒一次，随 subsegment 采样节拍）：total_ms/segment_ms 取自其注册的真实计时器（TwilightTimer）的 RoundTotalMs/CurrentSegmentMs，level_index 为当前所在合集关卡。仅中转裁判/导播，选手间互不转发。
+- 选手端实时计时上报（每秒一次，随 subsegment 采样节拍）：total_ms/segment_ms 取自其注册的真实计时器（TwilightTimer）的 RoundTotalMs/CurrentSegmentMs；real_time_ms 可选，为提供方 Real Time 现实/墙钟计时（TwilightTimer 实现 IRealtimeTimerProvider 时附带）；level_index 为当前所在合集关卡。仅中转裁判/导播，选手间互不转发。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -222,6 +222,7 @@
 | `level_index` | int | 是 | — |  |
 | `total_ms` | int | 是 | — |  |
 | `segment_ms` | int | 是 | — |  |
+| `real_time_ms` | int | None | 否 | None |  |
 
 ### `ClientRefereeMarkPrep`
 
@@ -581,7 +582,7 @@
 
 - type：'live_time'
 
-- 选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）：服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方。
+- 选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）：服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方；real_time_ms 为可选字段，选手端提供方支持现实/墙钟计时时携带。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -590,6 +591,7 @@
 | `level_index` | int | 是 | — |  |
 | `total_ms` | int | 是 | — |  |
 | `segment_ms` | int | 是 | — |  |
+| `real_time_ms` | int | None | 否 | None |  |
 
 ### `SrvRoundResult`
 

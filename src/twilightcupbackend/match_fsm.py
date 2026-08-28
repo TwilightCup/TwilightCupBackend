@@ -1093,6 +1093,7 @@ class MatchEngine:
         level_index: int,
         total_ms: int,
         segment_ms: int,
+        real_time_ms: int | None = None,
     ) -> None:
         """选手实时计时上报（每秒）：按席暂存最近一条并中转裁判/导播。
 
@@ -1111,6 +1112,7 @@ class MatchEngine:
             level_index=level_index,
             total_ms=total_ms,
             segment_ms=segment_ms,
+            real_time_ms=real_time_ms,
         )
         store.live_times[seat] = live  # 每席只留最近一条（握手补发用）
         await self.cm.send_to_seat(match_id, Seat.REFEREE, live)
