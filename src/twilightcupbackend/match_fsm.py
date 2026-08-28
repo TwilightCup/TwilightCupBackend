@@ -86,6 +86,11 @@ SUBSEGMENT_SETTLE_QUIET_S = 0.5
 # 每平面保留的穿越事件数上限（防客户端异常刷量；保留最新，旧的淘汰——
 # 迟到的真实穿越必须能进列表）。
 SUBSEGMENT_HIT_EVENTS_CAP = 8
+# 折返重访会话的开启门槛（毫秒）：已结算低键的再次穿越距该席最近一次穿越
+# 事件 ≥ 该值才视为「失败折返重来」的真实重访（坠落 + 3s 苏醒复活本身已
+# 超阈）；更近的视为曲折路线的绕行回声，维持丢弃。会话期间低键照常结算
+# 广播（游标不回退），重新追平最远进度即结束。
+SUBSEGMENT_REOPEN_MIN_GAP_MS = 3000
 
 
 def _validate_pick_tags(
@@ -968,9 +973,10 @@ class MatchEngine:
     ) -> None:
         """选手穿越对方采样平面（同一平面可多次上报）：记录事件并调度静默结算。
 
-        结算（``_settle_subsegment``）后才广播时间差，入口只做四道门控：
-        活跃回合、MULTI、样本存在、不低于已结算游标（迟到的乱序低键直接
-        忽略，导播画面单调不回跳）。
+        结算（``_settle_subsegment``）后才广播时间差。低键穿越的两道门：
+        折返重访会话期间（``subsegment_revisiting``）照常接受；会话外距该席
+        最近一次穿越 ≥ ``SUBSEGMENT_REOPEN_MIN_GAP_MS`` 才重开会话——失败
+        折返的真实重访（画面随罚时成本单调增长）与几秒内的绕行回声由此分开。
         """
         store = self.cm.registry.get(match_id)
         if store is None:
@@ -983,10 +989,24 @@ class MatchEngine:
         owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
         if store.subsegments.get((owner, level_index, seq)) is None:
             return  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
-        frontier = store.subsegment_frontier.get(seat)
-        if frontier is not None and (level_index, seq) < frontier:
-            return  # 已结算游标之前：迟到/乱序事件不再出现在画面上
         key = (seat, level_index, seq)
+        k = (level_index, seq)
+        frontier = store.subsegment_frontier.get(seat)
+        # 该席最近一次穿越事件（被丢弃的回声同样刷新基线：持续绕行打不开会话）
+        last_t = store.subsegment_last_t.get(seat)
+        if last_t is None or t_ms > last_t:
+            store.subsegment_last_t[seat] = t_ms
+        if (
+            key not in store.subsegment_settle_tasks
+            and frontier is not None
+            and k <= frontier
+            and seat not in store.subsegment_revisiting
+        ):
+            # 已结算键的再次穿越（含 amend）：距最近穿越不足门槛 = 绕行回声
+            if last_t is not None and t_ms - last_t < SUBSEGMENT_REOPEN_MIN_GAP_MS:
+                return
+            if k < frontier:
+                store.subsegment_revisiting.add(seat)  # 折返重来了：开启会话
         events = store.subsegment_hits.setdefault(key, [])
         events.append(t_ms)
         if len(events) > SUBSEGMENT_HIT_EVENTS_CAP:
@@ -1011,10 +1031,11 @@ class MatchEngine:
     ) -> None:
         """静默期已过且无再穿越：结算该平面并广播实时时间差。
 
-        有效时刻 = 最后一次穿越（擦边往返的早触发被真实穿越顶掉）；低于
-        已结算游标的迟到键丢弃不播，等于游标 = 结算后再次穿越（环路折返）
-        → 同键重播修正（amend，前端按键覆盖取最新）；高于游标 → 广播并
-        推进游标。回合已离开 IN_ROUND → 迟到结算丢弃。
+        有效时刻 = 最后一次穿越（擦边往返的早触发被真实穿越顶掉）。相对
+        游标三种情形：高于 → 广播并推进游标、结束折返会话；等于 → 同键
+        重播修正（amend）、结束会话；低于且在折返会话中 → 按当前时刻广播
+        但游标不回退，低于且不在会话中 → 迟到的乱序低键丢弃（事件保留
+        在档作后续重访基线）。回合已离开 IN_ROUND → 迟到结算丢弃。
         """
         await asyncio.sleep(SUBSEGMENT_SETTLE_QUIET_S)
         store = self.cm.registry.get(match_id)
@@ -1025,25 +1046,31 @@ class MatchEngine:
             return  # 已被更新的事件重新调度（或整场重置），本轮作废
         store.subsegment_settle_tasks.pop(key, None)
         if store.phase != MatchPhase.IN_ROUND:
-            store.subsegment_hits.pop(key, None)
             return
         events = store.subsegment_hits.get(key)
         if not events:
             return
+        k = (level_index, seq)
         frontier = store.subsegment_frontier.get(seat)
-        if frontier is not None and (level_index, seq) < frontier:
-            store.subsegment_hits.pop(key, None)  # 更高的键已结算：低键不再露面
-            return
+        if (
+            frontier is not None
+            and k < frontier
+            and seat not in store.subsegment_revisiting
+        ):
+            return  # 更高键已结算且非折返重访：低键不回退画面
         owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
         sample = store.subsegments.get((owner, level_index, seq))
         if sample is None:
-            store.subsegment_hits.pop(key, None)
             return
         round_id = store.current_round_id
         if round_id is None:
             return
         hit_ms = events[-1]
-        store.subsegment_frontier[seat] = (level_index, seq)
+        if frontier is None or k > frontier:
+            store.subsegment_frontier[seat] = k
+        # 追平/越过最远进度：折返会话结束（低键重访广播时游标与会话保持）
+        if frontier is None or k >= frontier:
+            store.subsegment_revisiting.discard(seat)
         await self.cm.broadcast_match(
             match_id,
             SrvSubsegmentGap(

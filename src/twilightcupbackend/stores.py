@@ -90,9 +90,17 @@ class MatchStore:
         # match_fsm.SUBSEGMENT_HIT_EVENTS_CAP）；结算取最后一条，结算后保留
         # 供后续再穿越追加（amend 修正）。
         self.subsegment_hits: dict[tuple[Seat, int, int], list[int]] = {}
-        # 已结算广播的进度游标：穿越方 → 最高 (level_index, seq)。低于它的事件
-        # 直接忽略，保证导播画面单调不回跳（曲折路线乱序穿越的治理核心）。
+        # 已结算广播的进度游标：穿越方 → 最高 (level_index, seq)。低于它的
+        # 迟到乱序事件直接忽略，保证导播画面单调不回跳（曲折路线治理核心）。
         self.subsegment_frontier: dict[Seat, tuple[int, int]] = {}
+        # 折返重访会话：选手失败折返重来期间（首次重开低键起 → 重新追平最远
+        # 进度止），低于游标的穿越照常接受与结算广播——计时器坠落不清零，
+        # 重穿时刻自带罚时成本，数值随时间单调增长，播出不会回跳；画面不再
+        # 冻结到追平最远进度为止。
+        self.subsegment_revisiting: set[Seat] = set()
+        # 各席最近一次穿越事件时刻（重访会话的开启门槛基线；被丢弃的绕行
+        # 回声同样刷新——持续绕行打不开会话）。
+        self.subsegment_last_t: dict[Seat, int] = {}
         # 静默结算任务：键同 subsegment_hits。最后一次穿越后静默期（见
         # match_fsm.SUBSEGMENT_SETTLE_QUIET_S）无再穿越即结算广播；新事件到达
         # 会取消旧任务重新起算。
@@ -155,6 +163,8 @@ class MatchStore:
         self.subsegments.clear()
         self.subsegment_hits.clear()
         self.subsegment_frontier.clear()
+        self.subsegment_revisiting.clear()
+        self.subsegment_last_t.clear()
         self.live_times.clear()
 
 

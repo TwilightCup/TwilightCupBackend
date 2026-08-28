@@ -319,6 +319,71 @@ def test_out_of_order_below_frontier_dropped(world, monkeypatch) -> None:  # typ
         assert g2["seq"] == 0 and g2["gap_ms"] == 1000
 
 
+def test_retry_revisit_updates_display(world) -> None:  # type: ignore[no-untyped-def]
+    """失败折返重来：距最近穿越 ≥3s 的低键穿越重开重访会话，按当前时刻
+    （自带罚时成本）广播——画面不再冻结；更高键照常推进并结束会话。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        for seq in (3, 4, 5, 6):
+            _sample(ws_a, rid, level=0, seq=seq, t_ms=1000 * seq)
+        _recv_until(
+            ws_b, lambda m: m["type"] == "subsegment_sample" and m["seq"] == 6
+        )
+        # 首次通过 3 → 5（游标推进到 5）
+        _hit(ws_b, rid, level=0, seq=3, t_ms=3500)
+        _hit(ws_b, rid, level=0, seq=5, t_ms=5500)
+        got = _collect_until(
+            ws_a, lambda m: m["type"] == "subsegment_gap" and m["seq"] == 5
+        )
+        assert [g["seq"] for g in got if g["type"] == "subsegment_gap"] == [3, 5]
+        # 失败折返：坠落重来（远离最近穿越 5500 已 ≥3s），重新穿越低键 3、4
+        _hit(ws_b, rid, level=0, seq=3, t_ms=15000)
+        _hit(ws_b, rid, level=0, seq=4, t_ms=16000)
+        got2 = _collect_until(
+            ws_a, lambda m: m["type"] == "subsegment_gap" and m["seq"] == 4
+        )
+        gaps2 = [g for g in got2 if g["type"] == "subsegment_gap"]
+        assert [g["seq"] for g in gaps2] == [3, 4], gaps2
+        assert [g["hit_ms"] for g in gaps2] == [15000, 16000], gaps2  # 当前时刻
+        # 游标未回退：更高键 6 照常结算推进
+        _hit(ws_b, rid, level=0, seq=6, t_ms=17000)
+        g6 = _recv_until(
+            ws_a, lambda m: m["type"] == "subsegment_gap" and m["seq"] == 6
+        )
+        assert g6["hit_ms"] == 17000
+
+
+def test_winding_echo_below_frontier_still_dropped(world) -> None:  # type: ignore[no-untyped-def]
+    """曲折路线绕行回声（低键穿越距最近穿越 <3s）→ 依旧丢弃，画面不回跳。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        for seq in (3, 5):
+            _sample(ws_a, rid, level=0, seq=seq, t_ms=1000 * seq)
+        _recv_until(
+            ws_b, lambda m: m["type"] == "subsegment_sample" and m["seq"] == 5
+        )
+        _hit(ws_b, rid, level=0, seq=3, t_ms=3500)
+        _hit(ws_b, rid, level=0, seq=5, t_ms=5500)
+        _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap" and m["seq"] == 5)
+        # 先穿 5 后绕回 3：距最近穿越仅 300ms → 回声，不广播
+        _hit(ws_b, rid, level=0, seq=3, t_ms=5800)
+        _assert_absent_since_ping(ws_a, ws_a, "subsegment_gap")
+
+
 def test_graze_selfheal_order(world, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """擦边早触发高键 + 随后正常穿越低键再真实穿越高键 → 画面按 3,4,5 顺序
     结算，高键有效时刻为真实穿越（早触发从未露面）。"""
