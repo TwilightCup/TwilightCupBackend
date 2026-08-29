@@ -510,15 +510,26 @@ class ConnectionManager:
             )
             return
 
-        if conn.read_only and not isinstance(
-            msg, (ClientDirectorSubscribe, ClientHeartbeat, ClientDirectorCommand)
-        ):
-            await self._send(
-                conn,
-                SrvError(
-                    code=403, msg=self.tr(conn.match_id, "error.director_readonly")
-                ),
+        match_ended = store is not None and store.match.status == MatchStatus.ENDED
+        if conn.read_only or match_ended:
+            allowed: tuple[type[ClientMessage], ...] = (
+                ClientDirectorSubscribe,
+                ClientHeartbeat,
             )
+            # 导播在未结束比赛中保持现有只读围观 + 舞台操控能力；已结束比赛
+            # 连导播的舞台操控也一并锁住（仅可查看/心跳）。
+            if conn.read_only and not match_ended:
+                allowed = (*allowed, ClientDirectorCommand)
+            if not isinstance(msg, allowed):
+                await self._send(
+                    conn,
+                    SrvError(
+                        code=403,
+                        msg=self.tr(
+                            conn.match_id, "error.match_readonly"
+                        ),
+                    ),
+                )
             return
 
         await self._dispatch(conn, msg)
@@ -945,8 +956,8 @@ class ConnectionManager:
 
         返回 ``(match, seat, 错误信息)``，每项均可为 None。
 
-        - 显式 match（裁判/导播 ``?match=``）：按 id 取 + 成员校验 + 非 ENDED，
-          座位由 _resolve_seat 定。
+        - 显式 match（裁判/导播 ``?match=``）：按 id 取 + 成员校验 + 座位校验；
+          ENDED 只允许裁判/导播只读连入（选手仍拒绝）。
         - 选手路径（显式 PLAYER 席位，或无 seat 但账号含 PLAYER 角色）：
           解析为其唯一 RUNNING 场（即"当前活跃比赛"），无则报错等待
           ——保证选手同时只在一场。
@@ -960,11 +971,15 @@ class ConnectionManager:
                 return None, None, self.tr_default("error.match_missing")
             if not self._is_member(match, account_id):
                 return None, None, self.tr_default("error.not_in_match")
-            if match.status == MatchStatus.ENDED:
-                return None, None, self.tr_default("error.match_ended")
             seat = self._resolve_seat(match, account_id, requested_seat)
             if seat is None:
                 return None, None, self.tr_default("error.seat_not_assigned")
+            if match.status == MatchStatus.ENDED:
+                if seat not in (Seat.REFEREE, Seat.DIRECTOR):
+                    return None, None, self.tr_default("error.match_ended")
+                # 已结束比赛对裁判/导播开放只读查看；动作由 handle 的统一
+                # match_ended 守卫拒绝。
+                return match, seat, None
             return match, seat, None
 
         explicit_player = requested_seat in (Seat.PLAYER_A.name, Seat.PLAYER_B.name)

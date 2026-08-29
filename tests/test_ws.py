@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from twilightcupbackend.datatypes import MatchStatus
+
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
     for _ in range(n):
@@ -56,6 +58,45 @@ def test_director_read_only(world) -> None:  # type: ignore[no-untyped-def]
         err = ws_d.receive_json()
         assert err["type"] == "error"
         assert err["code"] == 403
+
+
+def test_ended_match_allows_referee_and_director_readonly(
+    world,
+) -> None:  # type: ignore[no-untyped-def]
+    """已结束比赛：裁判/导播可只读连入，但操作类消息全部被拒；选手仍不可连入。"""
+    client, db, session, tokens = world
+    session.status = MatchStatus.ENDED
+    db.matches.replace(session)
+
+    # 裁判可连入，但 referee_mark_prep 被拒
+    with client.websocket_connect(
+        f"/ws/{tokens['ref']}?match={session.id}&seat=REFEREE"
+    ) as ws:
+        assert ws.receive_json()["type"] == "auth_ok"
+        _drain(ws, 4)  # ready_state / phase_change / seat_state A / seat_state B
+        ws.send_json({"type": "referee_mark_prep"})
+        err = ws.receive_json()
+        assert err["type"] == "error"
+        assert err["code"] == 403
+        assert "read-only" in err["msg"]
+
+    # 导播可连入，但 director_command 也被拒（已结束不可再操控舞台）
+    with client.websocket_connect(
+        f"/ws/{tokens['dri']}?match={session.id}&seat=DIRECTOR"
+    ) as ws:
+        assert ws.receive_json()["type"] == "auth_ok"
+        _drain(ws, 4)  # ready_state / phase_change / seat_state A / seat_state B
+        ws.send_json({"type": "director_command", "action": "switch_scene"})
+        err = ws.receive_json()
+        assert err["type"] == "error"
+        assert err["code"] == 403
+
+    # 选手仍不可连入已结束比赛
+    with client.websocket_connect(
+        f"/ws/{tokens['pa']}?match={session.id}&seat=PLAYER_A"
+    ) as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "auth_error"
 
 
 def test_director_receives_chat(world) -> None:  # type: ignore[no-untyped-def]

@@ -31,6 +31,7 @@ error.no_running_match_wait = 暂无进行中的比赛，请等待裁判开始
 error.not_in_match = 该账号未参与此比赛
 error.match_missing = 比赛不存在
 error.match_ended = 该比赛已结束
+error.match_readonly = 比赛已结束，当前为只读查看
 error.seat_not_assigned = 该账号未被指派为此比赛的席位
 error.seat_mismatch = 该账号未被指派为此比赛的 {seat}
 error.match_paused = 比赛已暂停，无法操作

@@ -30,6 +30,7 @@ error.no_running_match_wait = No ongoing match; please wait for the referee to s
 error.not_in_match = This account is not part of the match
 error.match_missing = Match not found
 error.match_ended = This match has already ended
+error.match_readonly = This match has ended; read-only
 error.seat_not_assigned = Account is not assigned to a seat in this match
 error.seat_mismatch = Account is not assigned as {seat} of this match
 error.match_paused = Match is paused; action unavailable
