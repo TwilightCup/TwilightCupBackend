@@ -88,5 +88,6 @@ verdict.not_verdicted = 该回合尚未判定
 match.already_ended = 比赛已结束
 match.no_winner = 尚未决出胜方，无法结束比赛
 match.ended = 比赛结束，胜方 {winner}
+match.winner_decided = 胜方已决出（{winner}），等待裁判/管理员手动结束；所有选手和导播断开后将自动结束
 match.admin_ended = 管理员结束了比赛
 rematch.announce = 回合平局，进入重赛 — 请再次 !ready

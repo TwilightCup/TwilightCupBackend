@@ -87,5 +87,6 @@ verdict.not_verdicted = Round not yet verdicted
 match.already_ended = Match already ended
 match.no_winner = Winner not decided; cannot end match
 match.ended = Match ended, winner {winner}
+match.winner_decided = Winner decided ({winner}); waiting for referee/admin to end manually, or auto-end when all players and director disconnect
 match.admin_ended = Admin ended the match
 rematch.announce = Round tied; entering rematch -- !ready again

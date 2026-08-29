@@ -119,7 +119,7 @@ def test_reconnect_no_flicker(world) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-untyped-def]
-    """§2 第 3 点：kick_players（达阈值自动结束后踢选手）同样广播 offline。"""
+    """§2 第 3 点：kick_players（达阈值后裁判手动结束并踢选手）广播 offline。"""
     client, _, _, tokens = world
     with (
         client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
@@ -129,7 +129,7 @@ def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-un
         for ws in (ws_r, ws_a, ws_b):
             _drain(ws, 5)
         # 走完整回合到比赛结束（win_threshold=2，需两回合）：
-        # 第二回合判完即达阈值 → 自动结束（match_end + 踢选手）。
+        # 第二回合判完达阈值后不自动结束，由裁判手动结束并踢选手。
         for round_no in range(2):
             ws_r.send_json({"type": "referee_mark_prep"})
             _drain(ws_r, 2)
@@ -149,14 +149,13 @@ def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-un
             ws_r.send_json(
                 {"type": "referee_verdict", "round_id": rid, "verdict": 1}  # A_WIN
             )
-            if round_no == 0:
-                _recv_until(
-                    ws_r,
-                    lambda m: m["type"] == "phase_change" and m["phase"] == 5,
-                )
-            else:
-                # 第二回合判完即达阈值 → 自动 match_end
-                _recv_until(ws_r, lambda m: m["type"] == "match_end")
+            _recv_until(
+                ws_r,
+                lambda m: m["type"] == "phase_change" and m["phase"] == 5,
+            )
+        # 第二轮后已到阈值；手动结束触发 kick_players
+        ws_r.send_json({"type": "referee_end_match"})
+        _recv_until(ws_r, lambda m: m["type"] == "match_end")
         # kick_players → 双方 offline
         for seat in ("PLAYER_A", "PLAYER_B"):
             m = _recv_until(

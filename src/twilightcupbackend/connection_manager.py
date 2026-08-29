@@ -416,6 +416,14 @@ class ConnectionManager:
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+        # 胜负已定后，双方选手与导播全部离场 → 自动结束比赛（裁判是否在线不影响）。
+        # 放到后台任务执行，避免断开收尾时向仍在线连接广播造成阻塞/死锁。
+        if self.match_engine is not None:
+            task = asyncio.create_task(
+                self.match_engine.auto_end_if_all_disconnected(store)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         self.logger.info(
             "Seat %s disconnected from match %s.", conn.seat.name, conn.match_id
         )

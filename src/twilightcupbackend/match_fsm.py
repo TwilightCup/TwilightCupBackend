@@ -1249,9 +1249,9 @@ class MatchEngine:
         """裁判手动结束比赛（backend-manual-match-end）。
 
         胜方自动按比分判定（达到取胜分数的一方）；未决出胜方时拒绝。
-        常规流程下达到取胜分数时 ``_apply_verdict`` 已自动结束，本入口
-        主要兜底改判把比分改回阈值以下再改回达阈、或暂停/异常卡住的场。
-        结束后广播 match_end/MATCH_END、踢出选手、通知赛程引擎。
+        达阈值后比赛停在 ROUND_END 等待本入口或管理端手动结束；若双方选手与
+        导播全部断开，也会由 disconnect 流程自动结束。结束后广播
+        match_end/MATCH_END、踢出选手、通知赛程引擎。
         """
         store = self.cm.registry.get(match_id)
         if store is None:
@@ -1285,6 +1285,27 @@ class MatchEngine:
         if store.wins_b >= threshold:
             return "B"
         return None
+
+    async def auto_end_if_all_disconnected(self, store: MatchStore) -> bool:
+        """胜负已定且双方选手/导播全部断开后自动收尾。
+
+        正常流程不再在达阈值时立即结束：先停在 ROUND_END 等裁判/管理员手动
+        结束；若所有选手和导播都离开，说明已无人可继续或观看，直接自动结束
+        以免比赛卡在“胜方已定但未收尾”状态。裁判是否在线不影响本判定。
+        """
+        if store.match.status != MatchStatus.RUNNING:
+            return False
+        winner = self._decided_winner(store)
+        if winner is None:
+            return False
+        if (
+            Seat.PLAYER_A in store.connections
+            or Seat.PLAYER_B in store.connections
+            or store.directors
+        ):
+            return False
+        await self._end_match(store, winner)
+        return True
 
     async def force_end_full(self, match_id: str) -> bool:
         """管理端强制结束的完整流程：按比分推导胜方后走 ``_end_match``。
@@ -1409,12 +1430,19 @@ class MatchEngine:
             ),
             kind="score",
         )
-        # 比分达到取胜分数 → 立即自动结束（广播 match_end/系统消息、踢选手、
-        # 推进赛程）；未达阈值才进入 ROUND_END 等待下一回合。
+        # 比分达到取胜分数后不再自动结束：进入 ROUND_END，等待裁判/管理员手动
+        # 结束；若双方选手与导播全部断开连接，则由 disconnect 流程自动收尾。
         winner = self._decided_winner(store)
         if winner is not None:
-            await self._end_match(store, winner)
-            return
+            await self.cm.system_message(
+                store.id,
+                self.cm.tr(
+                    store.id,
+                    "match.winner_decided",
+                    winner=winner,
+                ),
+                kind="winner_decided",
+            )
         store.phase = MatchPhase.ROUND_END
         store.reset_ready()
         await self.cm.broadcast_match(
