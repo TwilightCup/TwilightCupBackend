@@ -681,6 +681,10 @@ class MatchEngine:
                 store.id, SrvPhaseChange(phase=MatchPhase.PREP)
             )
             return
+        # 回合开始后裁判独立计时器不再有意义：静默取消，不广播停止消息
+        if store.counter_timer is not None:
+            await store.counter_timer.cancel()
+            store.counter_timer = None
         # 回合开始后预载状态不再有意义，清场
         await self._reset_preload(store)
         # 分段采样随新回合清零（重赛路径不经 begin_prep，此处兜底）

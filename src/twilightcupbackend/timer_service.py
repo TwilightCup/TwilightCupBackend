@@ -1,8 +1,8 @@
 """计时器服务。
 
 参考 AShareGateway timer.py 的 asyncio task 风格（start/run/cancel + 关闭标志）。
-本期实现裁判独立倒计时器 ``CounterTimer``（与比赛流程无程序关联，§5.4）；
-比赛开始倒计时 ``CountdownTimer`` 在 M6 随状态机一并实现。
+本期实现裁判独立倒计时器 ``CounterTimer``（独立计时，回合开始时由状态机
+静默停止，§5.4）；比赛开始倒计时 ``CountdownTimer`` 在 M6 随状态机一并实现。
 """
 
 from __future__ import annotations
