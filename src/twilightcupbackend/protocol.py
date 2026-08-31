@@ -124,6 +124,11 @@ class ClientSubsegmentSample(BaseModel):
     dx: float
     dy: float
     dz: float
+    plane_radius: float | None = Field(
+        default=None,
+        description="本端检测平面半径（米，Subsegment.PlaneRadius）；服务端用于陈旧平面"
+        "回路识别，旧版客户端可缺省",
+    )
 
 
 class ClientSubsegmentHit(BaseModel):

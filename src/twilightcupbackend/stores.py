@@ -54,6 +54,9 @@ class SubsegmentSample:
     dx: float
     dy: float
     dz: float
+    # 采样方上报的检测平面半径（米）；None = 旧版客户端未上报，
+    # 服务端陈旧平面识别回退 match_fsm.SUBSEGMENT_LOOPBACK_RADIUS
+    plane_radius: float | None = None
 
 
 class MatchStore:

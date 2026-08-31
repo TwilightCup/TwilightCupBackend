@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import pairwise
 from logging import Logger, getLogger
+from math import dist
 from typing import TYPE_CHECKING, Literal
 
 from . import i18n, scoring
@@ -91,6 +93,15 @@ SUBSEGMENT_HIT_EVENTS_CAP = 8
 # 超阈）；更近的视为曲折路线的绕行回声，维持丢弃。会话期间低键照常结算
 # 广播（游标不回退），重新追平最远进度即结束。
 SUBSEGMENT_REOPEN_MIN_GAP_MS = 3000
+# 陈旧平面回路识别的空间半径（米）：采样未携带 plane_radius 时回退使用。
+# 与客户端 Subsegment.PlaneRadius 默认值一致；若客户端携带 plane_radius，
+# 则以该值为准。
+SUBSEGMENT_LOOPBACK_RADIUS = 50.0
+# 判定「失败折返重来」所需的相邻采样位移阈值（米）：采样序列中出现超过该
+# 阈值的位置跳变视为死亡/复活传送，该次低键穿越是真实重访而非路线自然
+# 回路，不应被陈旧平面识别拦截。正常 1Hz 移动/坠落远小于该阈值；测试可
+# monkeypatch 调小。
+SUBSEGMENT_RESPAWN_JUMP_METERS = 100.0
 
 
 def _validate_pick_tags(
@@ -920,6 +931,7 @@ class MatchEngine:
         dx: float,
         dy: float,
         dz: float,
+        plane_radius: float | None = None,
     ) -> None:
         """选手端分段采样上报：存档并转发给对方（其客户端据此建检测平面）。"""
         store = self.cm.registry.get(match_id)
@@ -944,6 +956,7 @@ class MatchEngine:
             dx=dx,
             dy=dy,
             dz=dz,
+            plane_radius=plane_radius,
         )
         # 只发对方 seat（裁判/导播消费 subsegment_gap 即可）；对方离线则仅存，
         # 重连时由 on_reconnect_resync 按插入序补放
@@ -991,8 +1004,16 @@ class MatchEngine:
         if record.pick_snapshot.type != PickType.MULTI:
             return
         owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
-        if store.subsegments.get((owner, level_index, seq)) is None:
+        owner_sample = store.subsegments.get((owner, level_index, seq))
+        if owner_sample is None:
             return  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
+        if self._is_loopback_revisit(
+            store, seat, level_index, owner_sample, t_ms
+        ):
+            # 路线自然回路再次经过陈旧平面：穿越方在空间上早已路过该点
+            # （且比采样方更早），此时 gap = hit_ms - sample_ms 会把领先
+            # 误播成大幅落后。直接丢弃，不记录、不调度、不广播。
+            return
         key = (seat, level_index, seq)
         k = (level_index, seq)
         frontier = store.subsegment_frontier.get(seat)
@@ -1016,6 +1037,76 @@ class MatchEngine:
         if len(events) > SUBSEGMENT_HIT_EVENTS_CAP:
             del events[:-SUBSEGMENT_HIT_EVENTS_CAP]
         self._schedule_settle(store, match_id, seat, level_index, seq)
+
+    def _is_loopback_revisit(
+        self,
+        store: MatchStore,
+        seat: Seat,
+        level_index: int,
+        owner_sample: SubsegmentSample,
+        t_ms: int,
+    ) -> bool:
+        """路线自然回路识别：穿越方再次经过陈旧平面，不产生时间差广播。
+
+        判据：穿越方在采样方留样之前就曾到达该平面位置（空间距离 ≤ 其检测
+        平面半径），且从那次到达直至本次穿越之间其采样轨迹连续（无死亡/
+        复活传送级的位置跳变）——即路线本身绕回了同一点。此类穿越若按
+        ``gap = hit_ms - sample_ms`` 广播，会把领先误播成大幅落后。
+
+        失败折返重来（坠落/复活后重新追平面）同样满足“早于采样方到过”，
+        但轨迹中存在超过 ``SUBSEGMENT_RESPAWN_JUMP_METERS`` 的位置跳变，
+        因此不会被拦截，仍走既有折返重访/结算逻辑。
+        """
+        samples = sorted(
+            (
+                s
+                for (s_seat, s_level, _), s in store.subsegments.items()
+                if s_seat == seat and s_level == level_index
+            ),
+            key=lambda s: s.t_ms,
+        )
+        if not samples:
+            return False
+        radius = self._subsegment_plane_radius(samples, t_ms)
+        earlier: SubsegmentSample | None = None
+        for sample in samples:
+            if sample.t_ms >= owner_sample.t_ms:
+                break
+            if (
+                dist(
+                    (sample.px, sample.py, sample.pz),
+                    (owner_sample.px, owner_sample.py, owner_sample.pz),
+                )
+                <= radius
+            ):
+                earlier = sample
+        if earlier is None:
+            return False
+        later = [s for s in samples if earlier.t_ms < s.t_ms <= t_ms]
+        if not later:
+            # 中间没有采样（断线丢样等）：保守不拦截，交给现有结算逻辑。
+            return False
+        path = [earlier, *later]
+        for prev, cur in pairwise(path):
+            if (
+                dist(
+                    (prev.px, prev.py, prev.pz),
+                    (cur.px, cur.py, cur.pz),
+                )
+                > SUBSEGMENT_RESPAWN_JUMP_METERS
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _subsegment_plane_radius(
+        samples: list[SubsegmentSample], t_ms: int
+    ) -> float:
+        """取该席在 t_ms 前最近一次上报的检测平面半径；缺省回退常量。"""
+        for sample in reversed(samples):
+            if sample.t_ms <= t_ms and sample.plane_radius is not None:
+                return sample.plane_radius
+        return SUBSEGMENT_LOOPBACK_RADIUS
 
     def _schedule_settle(
         self, store: MatchStore, match_id: str, seat: Seat, level_index: int, seq: int

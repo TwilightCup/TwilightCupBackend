@@ -81,6 +81,28 @@ def _sample(ws, rid: str, level: int, seq: int, t_ms: int) -> None:  # type: ign
     )
 
 
+def _sample_at(  # type: ignore[no-untyped-def]
+    ws, rid: str, level: int, seq: int, t_ms: int, px: float, py: float, pz: float,
+    plane_radius: float | None = None,
+) -> None:
+    msg = {
+        "type": "subsegment_sample",
+        "round_id": rid,
+        "level_index": level,
+        "seq": seq,
+        "t_ms": t_ms,
+        "px": px,
+        "py": py,
+        "pz": pz,
+        "dx": 0.0,
+        "dy": 0.0,
+        "dz": 0.0,
+    }
+    if plane_radius is not None:
+        msg["plane_radius"] = plane_radius
+    ws.send_json(msg)
+
+
 def _hit(ws, rid: str, level: int, seq: int, t_ms: int) -> None:  # type: ignore[no-untyped-def]
     ws.send_json(
         {
@@ -360,6 +382,74 @@ def test_retry_revisit_updates_display(world) -> None:  # type: ignore[no-untype
         assert g6["hit_ms"] == 17000
 
 
+def test_loopback_stale_plane_suppressed(world, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """路线自然回路再次经过陈旧平面：穿越方早于采样方到过该点且轨迹连续
+    → 不广播 gap，避免领先者被误播成大幅落后。"""
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_SETTLE_QUIET_S", 0.1)
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_LOOPBACK_RADIUS", 2.0)
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_RESPAWN_JUMP_METERS", 20.0)
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        # A 先到 P，B 后到 P；B 穿越 A 的平面 → 真实差距
+        _sample_at(ws_a, rid, level=0, seq=0, t_ms=1000, px=0.0, py=0.0, pz=0.0)
+        _sample_at(ws_b, rid, level=0, seq=0, t_ms=2000, px=0.0, py=0.0, pz=0.0)
+        _hit(ws_b, rid, level=0, seq=0, t_ms=2000)
+        g = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g["gap_ms"] == 1000 and g["hit_seat"] == "PLAYER_B"
+        # A 绕路线一圈后再次到 P：轨迹连续（无复活级跳变）
+        _sample_at(ws_a, rid, level=0, seq=1, t_ms=1500, px=0.5, py=0.0, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=2, t_ms=2500, px=0.5, py=0.5, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=3, t_ms=3500, px=0.0, py=0.5, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=4, t_ms=4500, px=0.0, py=0.25, pz=0.0)
+        # A 再次经过 P 时穿越 B 的陈旧平面 → 应被回路识别拦截
+        _hit(ws_a, rid, level=0, seq=0, t_ms=5000)
+        _assert_absent_since_ping(ws_a, ws_a, "subsegment_gap")
+
+
+def test_retry_revisit_after_respawn_jump_still_broadcast(
+    world, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """轨迹中出现复活级位置跳变的低键重穿 → 是真实失败折返而非路线回路，
+    仍按当前时刻广播（计时器坠落不清零，数值自带罚时成本）。"""
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_SETTLE_QUIET_S", 0.1)
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_LOOPBACK_RADIUS", 2.0)
+    monkeypatch.setattr(match_fsm, "SUBSEGMENT_RESPAWN_JUMP_METERS", 20.0)
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+        client.websocket_connect(f"/ws/{tokens['pb']}") as ws_b,
+    ):
+        for ws in (ws_r, ws_a, ws_b):
+            _drain(ws, 5)
+        rid = _drive_to_round(ws_r, ws_a)
+        # A 先到 P，B 后到 P；B 穿越 A 的平面 → 真实差距
+        _sample_at(ws_a, rid, level=0, seq=0, t_ms=1000, px=0.0, py=0.0, pz=0.0)
+        _sample_at(ws_b, rid, level=0, seq=0, t_ms=2000, px=0.0, py=0.0, pz=0.0)
+        _hit(ws_b, rid, level=0, seq=0, t_ms=2000)
+        g = _recv_until(ws_a, lambda m: m["type"] == "subsegment_gap")
+        assert g["gap_ms"] == 1000 and g["hit_seat"] == "PLAYER_B"
+        # A 坠亡/复活：采样轨迹出现 > 阈值的位置跳变（0 → 30 → 0）
+        _sample_at(ws_a, rid, level=0, seq=1, t_ms=1500, px=30.0, py=0.0, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=2, t_ms=2500, px=0.0, py=0.0, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=3, t_ms=3500, px=0.5, py=0.0, pz=0.0)
+        _sample_at(ws_a, rid, level=0, seq=4, t_ms=4500, px=0.25, py=0.0, pz=0.0)
+        # A 重新追平 P → 不是路线回路，仍应广播（当前时刻自带罚时成本）
+        _hit(ws_a, rid, level=0, seq=0, t_ms=5000)
+        g2 = _recv_until(
+            ws_a,
+            lambda m: m["type"] == "subsegment_gap" and m["hit_seat"] == "PLAYER_A",
+        )
+        assert g2["seq"] == 0 and g2["hit_ms"] == 5000 and g2["gap_ms"] == 3000
+
+
 def test_winding_echo_below_frontier_still_dropped(world) -> None:  # type: ignore[no-untyped-def]
     """曲折路线绕行回声（低键穿越距最近穿越 <3s）→ 依旧丢弃，画面不回跳。"""
     client, _, _, tokens = world
@@ -538,6 +628,9 @@ def test_protocol_strict() -> None:
         "dz": 0.0,
     }
     parse(good)
+    parse({**good, "plane_radius": 50.0})  # 可选扩展字段
+    with pytest.raises(ValidationError):
+        parse({**good, "plane_radius": "abc"})
     with pytest.raises(ValidationError):
         parse({**good, "extra": 1})
     with pytest.raises(ValidationError):

@@ -623,10 +623,23 @@ class ConnectionManager:
                 dx=dx,
                 dy=dy,
                 dz=dz,
+                plane_radius=pr,
             ):
                 if await self._require_player(conn):
                     await engine.on_subsegment_sample(
-                        conn.match_id, conn.seat, rid, li, sq, t, px, py, pz, dx, dy, dz
+                        conn.match_id,
+                        conn.seat,
+                        rid,
+                        li,
+                        sq,
+                        t,
+                        px,
+                        py,
+                        pz,
+                        dx,
+                        dy,
+                        dz,
+                        pr,
                     )
             case ClientSubsegmentHit(round_id=rid, level_index=li, seq=sq, t_ms=t):
                 if await self._require_player(conn):
