@@ -431,11 +431,11 @@ class MatchEngine:
         match_id = store.id
 
         async def on_tick(remaining: int) -> None:
+            # 仅下发结构化倒计时 tick，不重复刷系统聊天消息（保留开局那条 intro）。
             await self.cm.broadcast_match(
                 match_id,
                 SrvCountdownTick(remaining_secs=remaining, source=source),  # type: ignore[arg-type]
             )
-            await self.cm.system_message(match_id, str(remaining), kind="countdown")
 
         async def on_zero() -> None:
             await self._on_countdown_zero(store)
