@@ -17,6 +17,7 @@ from .config import Settings
 from .databases import (
     Accounts,
     ChatMessages,
+    CtTags,
     Fixtures,
     Levels,
     Mappools,
@@ -28,8 +29,10 @@ from .databases import (
     Tournaments,
 )
 from .datatypes import (
+    DEFAULT_CT_TAGS,
     DEFAULT_TOURNAMENT_ID,
     SPEEDRUN_CACHE_RETENTION_S,
+    CtTag,
     Pick,
     Tournament,
     TournamentFormat,
@@ -66,6 +69,7 @@ class DBController:
         self.match_logs = MatchLogs(db)
         self.mappools = Mappools(db)
         self.levels = Levels(db)
+        self.ct_tags = CtTags(db)
         self.tournaments = Tournaments(db)
         self.fixtures = Fixtures(db)
         self.speedrun_cache = SpeedrunCaches(db)
@@ -80,6 +84,7 @@ class DBController:
         self.match_logs.collection.create_index("match_id", unique=True)
         self.mappools.collection.create_index("name", unique=True)
         self.levels.collection.create_index("name", unique=True)
+        self.ct_tags.collection.create_index("name", unique=True)
         # 赛程管理
         self.tournaments.collection.create_index("participant_ids")
         self.tournaments.collection.create_index("referee_ids")
@@ -100,6 +105,15 @@ class DBController:
         self.speedrun_cache.collection.create_index(
             "fetched_at", expireAfterSeconds=SPEEDRUN_CACHE_RETENTION_S
         )
+        self.ensure_custom_tags()
+
+    def ensure_custom_tags(self) -> None:
+        """词条库为空时写入默认 CT 词条（幂等；仅首次启动 seeding）。"""
+        if self.ct_tags.count() > 0:
+            return
+        for name in DEFAULT_CT_TAGS:
+            self.ct_tags.insert(CtTag(name=name))
+        self.logger.info("默认 CT 词条库已初始化（%d 条）。", len(DEFAULT_CT_TAGS))
 
     def ensure_default_tournament(self) -> None:
         """确保默认赛事存在（固定主键，幂等），并回填存量孤立比赛。

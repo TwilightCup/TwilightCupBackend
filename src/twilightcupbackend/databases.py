@@ -15,6 +15,7 @@ from pymongo.database import Database
 from .datatypes import (
     Account,
     ChatMessage,
+    CtTag,
     Document,
     Fixture,
     FixtureStatus,
@@ -178,6 +179,16 @@ class Levels(Repository[Level]):
         super().__init__(database, "levels", Level)
 
     def get_by_name(self, name: str) -> Level | None:
+        return self.find_one({"name": name})
+
+
+class CtTags(Repository[CtTag]):
+    """词条库：CT 类别支持的词条由管理端维护。"""
+
+    def __init__(self, database: Database) -> None:
+        super().__init__(database, "ct_tags", CtTag)
+
+    def get_by_name(self, name: str) -> CtTag | None:
         return self.find_one({"name": name})
 
 

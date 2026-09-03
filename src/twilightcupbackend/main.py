@@ -61,6 +61,10 @@ _TAGS: list[dict[str, str]] = [
         "项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），"
         "支持 auto/cached/refresh 三模式（前端 SWR）",
     },
+    {
+        "name": "ct-tags",
+        "description": "词条库（管理员）：维护 CT 类别图池可选的全局词条",
+    },
 ]
 
 

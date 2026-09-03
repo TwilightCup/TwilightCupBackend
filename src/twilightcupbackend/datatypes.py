@@ -28,6 +28,21 @@ def _new_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# CT 词条默认值（词条管理库的前置种子；见 rest/ct_tag_controller.py）
+# ---------------------------------------------------------------------------
+
+DEFAULT_CT_TAGS: tuple[str, ...] = (
+    "Glitchless",
+    "Pinch",
+    "Checkpoint",
+    "Jumpless",
+    "No Checkpoint",
+    "No EC",
+)
+CT_TAG_ACHIEVEMENT = "Achievement"
+
+
+# ---------------------------------------------------------------------------
 # 枚举
 # ---------------------------------------------------------------------------
 
@@ -347,6 +362,17 @@ class Pick(BaseModel):
     speedrun_variables: dict[str, str] = Field(default_factory=dict)
 
 
+class CtTag(Document):
+    """自定义词条（CT 类别可选附加规则标签）。
+
+    管理端「词条管理」维护全局词条库；图池 CT 类别通过 ``Category.ct_tags``
+    选择本图池支持的词条。``name`` 唯一且不可改（与 Level.name 同策略）。
+    """
+
+    name: str  # 词条原文，如 "Glitchless" / "Achievement"
+    created_at: datetime = Field(default_factory=now_ts)
+
+
 class Category(BaseModel):
     """图池类别（仅展示分组，无程序逻辑）。"""
 
@@ -354,6 +380,9 @@ class Category(BaseModel):
 
     name: str  # 类别名，如 ML / IL / CP
     picks: list[Pick] = Field(default_factory=list)
+    # CT 类别支持的词条（管理端词条库中的 name 列表；None = 旧数据未配置，
+    # 回退内置词条。空列表 = 本图池 CT 不支持任何词条）。仅 CT 类别有意义。
+    ct_tags: list[str] | None = None
 
 
 class Mappool(BaseModel):

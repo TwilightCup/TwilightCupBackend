@@ -9,6 +9,7 @@ from ..controllers import DBController
 from .account_controller import AccountController
 from .auth_controller import AuthController
 from .bilibili_proxy import BilibiliProxyController
+from .ct_tag_controller import CtTagController
 from .level_controller import LevelController
 from .log_controller import LogController
 from .mappool_controller import MappoolController
@@ -30,6 +31,7 @@ def register_routes(app: FastAPI, db: DBController, settings: Settings) -> None:
     app.include_router(AccountController(db).router)
     app.include_router(MatchController(db, cm, storage).router)
     app.include_router(MappoolController(db, storage).router)
+    app.include_router(CtTagController(db).router)
     app.include_router(LevelController(db, storage).router)
     app.include_router(TournamentController(db, cm, storage).router)
     app.include_router(MeController(db, cm, storage).router)

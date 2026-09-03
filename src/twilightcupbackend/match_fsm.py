@@ -21,6 +21,7 @@ from .datatypes import (
     AttemptStatus,
     CollectionConfig,
     LevelTime,
+    Mappool,
     Match,
     MatchLog,
     MatchPhase,
@@ -104,14 +105,25 @@ SUBSEGMENT_LOOPBACK_RADIUS = 50.0
 SUBSEGMENT_RESPAWN_JUMP_METERS = 100.0
 
 
+def _ct_category_tags(mappool: Mappool) -> list[str] | None:
+    """取图池 CT 类别显式配置的支持词条；旧图池未配置时返回 None（走全局内置回退）。"""
+    for cat in mappool.categories:
+        if cat.name.strip().upper() == CT_CATEGORY:
+            return cat.ct_tags
+    return None
+
+
 def _validate_pick_tags(
-    pick: Pick, tags: list[str], limit: int
+    pick: Pick,
+    tags: list[str],
+    limit: int,
+    ct_tags: list[str] | None = None,
 ) -> tuple[str, dict[str, object]] | None:
     """校验裁判随选图提交的词条；违规返回 (消息键, 参数)，否则 None。
 
     规则（backend-ct-pick-tags §2.1，扩展到 CT/EX/CP）：仅这三类别可携带、
-    数量 ≤ 本场 ct_tag_count、枚举内（单关额外允许 Achievement）、
-    Checkpoint 与 No Checkpoint 互斥。
+    数量 ≤ 本场 ct_tag_count、词条在图池 CT 类别支持范围内（旧图池回退内置
+    枚举，单关额外允许 Achievement）、Checkpoint 与 No Checkpoint 互斥。
     """
     if not tags:
         return None
@@ -119,11 +131,16 @@ def _validate_pick_tags(
         return "pick.tags_category", {"category": pick.category, "code": pick.code}
     if len(tags) > limit:
         return "pick.tags_too_many", {"limit": limit, "tags": tags}
-    allowed = (
-        CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
-        if pick.type == PickType.SINGLE
-        else CT_TAG_VALUES
-    )
+    if pick.category == CT_CATEGORY and ct_tags is not None:
+        allowed = set(ct_tags)
+        if pick.type == PickType.SINGLE:
+            allowed |= CT_TAG_SINGLE_ONLY
+    else:
+        allowed = (
+            CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
+            if pick.type == PickType.SINGLE
+            else CT_TAG_VALUES
+        )
     for tag in tags:
         if tag not in allowed:
             return "pick.tags_invalid", {"tags": tag}
@@ -332,7 +349,12 @@ class MatchEngine:
             return
         tags = tags or []
         # 词条 / 重试次数校验（backend-ct-pick-tags §2.1）：客户端已拦截但不可信任
-        error = _validate_pick_tags(pick, tags, store.match.ct_tag_count)
+        error = _validate_pick_tags(
+            pick,
+            tags,
+            store.match.ct_tag_count,
+            _ct_category_tags(store.match.mappool),
+        )
         if error is None:
             error = _validate_pick_retry(pick, retry_count)
         if error is not None:

@@ -16,6 +16,7 @@ from ..datatypes import (
     Account,
     AccountType,
     BracketSide,
+    CtTag,
     Fixture,
     FixtureStatus,
     Level,
@@ -573,3 +574,22 @@ class LevelOut(BaseModel):
             logo_url=storage.public_url(level.logo) if storage else None,
             created_at=level.created_at,
         )
+
+
+# ---------------------------------------------------------------------------
+# 词条管理
+# ---------------------------------------------------------------------------
+
+
+class CtTagCreate(BaseModel):
+    name: str = Field(description="词条原文（唯一，如 Glitchless / Achievement）")
+
+
+class CtTagOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+
+    @classmethod
+    def from_doc(cls, doc: CtTag) -> CtTagOut:
+        return cls(id=doc.id, name=doc.name, created_at=doc.created_at)
