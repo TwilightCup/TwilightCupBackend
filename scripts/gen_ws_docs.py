@@ -84,6 +84,9 @@ DESCRIPTIONS: dict[str, str] = {
     '实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键'
     "rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、"
     "原样透传）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。",
+    "ClientUtcTimestamp": "选手端 UTC 时间戳周期上报（连接后按固定间隔发送，间隔在"
+    "选手端配置中设置）：utc_ms 为 Unix UTC 毫秒时间戳。仅选手席位有效；"
+    "服务端按席暂存最近一条并中转裁判/导播，不参与比赛判定。",
     "ClientHeartbeat": "心跳保活（导播亦可用）。",
     "ClientDraftSync": "裁判上报 ban/pick 草稿（前端权威，后端存储+转发）",
     # 服务端 -> 客户端
@@ -124,6 +127,9 @@ DESCRIPTIONS: dict[str, str] = {
     "SrvLiveTime": "选手实时计时中转（每秒；仅裁判与导播席，overlay 计时显示用）："
     "服务端按席暂存最近一条，IN_ROUND 期间裁判/导播晚连时握手补发双方；"
     "real_time_ms 为可选字段，选手端提供方支持现实/墙钟计时时携带。",
+    "SrvUtcTimestamp": "选手 UTC 时间戳中转（连接后按固定间隔；仅裁判与导播席）："
+    "服务端按席暂存最近一条，裁判/导播（含晚连）连入时握手补发双方，"
+    "用于时钟偏移/同步显示。",
     "SrvRoundResult": "本回合结算（判定与双方成绩）。",
     "SrvCumulativeScore": "累计比分。",
     "SrvMatchEnd": "比赛结束，宣告胜方（判定落定且比分达到取胜分数时自动触发）。",

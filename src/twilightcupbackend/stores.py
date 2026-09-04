@@ -112,6 +112,9 @@ class MatchStore:
         ] = {}
         # 选手实时计时（每秒上报）：按席暂存最近一条，裁判/导播晚连时握手补发。
         self.live_times: dict[Seat, SrvLiveTime] = {}
+        # 选手 UTC 时间戳（按固定间隔上报）：按席暂存最近一条，裁判/导播晚连时
+        # 握手补发；连接级遥测，不随回合清空。
+        self.utc_timestamps: dict[Seat, int] = {}
         # 裁判独立倒计时器（每比赛至多一个）
         self.counter_timer: CounterTimer | None = None
         # 比赛开始倒计时（auto 可被取消 / manual 不可）

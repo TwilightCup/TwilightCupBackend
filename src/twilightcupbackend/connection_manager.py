@@ -54,6 +54,7 @@ from .protocol import (
     ClientRefereeVerdict,
     ClientSubsegmentHit,
     ClientSubsegmentSample,
+    ClientUtcTimestamp,
     ServerMessage,
     SrvAuthError,
     SrvAuthOk,
@@ -68,6 +69,7 @@ from .protocol import (
     SrvReadyState,
     SrvSeatState,
     SrvSystem,
+    SrvUtcTimestamp,
     parse_client_message,
 )
 from .stores import Connection, MatchRegistry, MatchStore
@@ -356,6 +358,13 @@ class ConnectionManager:
         ):
             for live in store.live_times.values():
                 await self._send(conn, live)
+        # 裁判/导播连入（含晚连）补发双方最近一次 UTC 时间戳；选手席不补。
+        # 该遥测连接期间持续上报，不限于回合内，故不受 phase 条件限制。
+        if seat in (Seat.REFEREE, Seat.DIRECTOR) and store.utc_timestamps:
+            for player_seat, utc_ms in store.utc_timestamps.items():
+                await self._send(
+                    conn, SrvUtcTimestamp(seat=player_seat.name, utc_ms=utc_ms)
+                )
         # 座席在线状态广播（backend-seat-presence）：选手连入通知全员——
         # 系统提示连本人也发（system 消息 = Twilight 前缀，各端必须逐字一致，
         # 不排除任何在席连接）；seat_state 广播仍排除本人（上方已补发全量
@@ -657,6 +666,14 @@ class ConnectionManager:
                     await engine.on_live_time(
                         conn.match_id, conn.seat, rid, li, tm, sm, rt
                     )
+            case ClientUtcTimestamp(utc_ms=ts):
+                if await self._require_player(conn):
+                    store = self.registry.get(conn.match_id)
+                    if store is not None:
+                        store.utc_timestamps[conn.seat] = ts
+                    srv = SrvUtcTimestamp(seat=conn.seat.name, utc_ms=ts)
+                    await self.send_to_seat(conn.match_id, Seat.REFEREE, srv)
+                    await self.send_to_seat(conn.match_id, Seat.DIRECTOR, srv)
             case ClientLevelTimeUpload(
                 round_id=rid,
                 level_index=li,

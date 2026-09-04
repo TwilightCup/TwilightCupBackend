@@ -336,6 +336,16 @@
 | `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 'config_update' | 是 | — |  |
 | `payload` | dict[str, Any] | 否 | <dict> |  |
 
+### `ClientUtcTimestamp`
+
+- type：'utc_timestamp'
+
+- 选手端 UTC 时间戳周期上报（连接后按固定间隔发送，间隔在选手端配置中设置）：utc_ms 为 Unix UTC 毫秒时间戳。仅选手席位有效；服务端按席暂存最近一条并中转裁判/导播，不参与比赛判定。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `utc_ms` | int | 是 | — |  |
+
 ### `ClientHeartbeat`
 
 - type：'heartbeat'
@@ -593,6 +603,17 @@
 | `total_ms` | int | 是 | — |  |
 | `segment_ms` | int | 是 | — |  |
 | `real_time_ms` | int | None | 否 | None |  |
+
+### `SrvUtcTimestamp`
+
+- type：'utc_timestamp'
+
+- 选手 UTC 时间戳中转（连接后按固定间隔；仅裁判与导播席）：服务端按席暂存最近一条，裁判/导播（含晚连）连入时握手补发双方，用于时钟偏移/同步显示。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `seat` | str | 是 | — |  |
+| `utc_ms` | int | 是 | — |  |
 
 ### `SrvRoundResult`
 

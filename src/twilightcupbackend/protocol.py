@@ -271,6 +271,18 @@ class ClientDirectorCommand(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class ClientUtcTimestamp(BaseModel):
+    """选手端 UTC 时间戳周期性上报（连接后按固定间隔发送）。
+
+    仅选手席位；服务端按席暂存最近一条并中转裁判/导播（内存态，不参与
+    比赛判定），用于时间同步/监控等后续用途。utc_ms 为 Unix UTC 毫秒时间戳。
+    """
+
+    model_config = _cfg
+    type: Literal["utc_timestamp"] = "utc_timestamp"
+    utc_ms: int
+
+
 class ClientHeartbeat(BaseModel):
     model_config = _cfg
     type: Literal["heartbeat"] = "heartbeat"
@@ -307,6 +319,7 @@ ClientMessage = Annotated[
     | ClientCounterReset
     | ClientDirectorSubscribe
     | ClientDirectorCommand
+    | ClientUtcTimestamp
     | ClientHeartbeat
     | ClientDraftSync,
     Field(discriminator="type"),
@@ -532,6 +545,19 @@ class SrvLiveTime(BaseModel):
     real_time_ms: int | None = None
 
 
+class SrvUtcTimestamp(BaseModel):
+    """选手 UTC 时间戳中转（连接后按固定间隔；仅裁判与导播席）。
+
+    服务端按席暂存最近一条：裁判/导播（含晚连）都可拿到该选手最近的
+    UTC 时间戳，用于时钟偏移/同步显示。
+    """
+
+    model_config = _cfg
+    type: Literal["utc_timestamp"] = "utc_timestamp"
+    seat: str
+    utc_ms: int
+
+
 class SrvRoundResult(BaseModel):
     model_config = _cfg
     type: Literal["round_result"] = "round_result"
@@ -647,6 +673,7 @@ ServerMessage = (
     | SrvSubsegmentSample
     | SrvSubsegmentGap
     | SrvLiveTime
+    | SrvUtcTimestamp
     | SrvRoundResult
     | SrvCumulativeScore
     | SrvMatchEnd
