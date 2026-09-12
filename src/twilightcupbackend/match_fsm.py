@@ -796,10 +796,13 @@ class MatchEngine:
         this_level_ms: int,
         total_ms: int | None,
         invalid_reasons: list[str] | None = None,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -858,11 +861,18 @@ class MatchEngine:
         await self._broadcast_status(match_id, seat, state)
 
     async def on_attempt_skip(
-        self, match_id: str, seat: Seat, round_id: str, attempt_index: int
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        attempt_index: int,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -890,10 +900,13 @@ class MatchEngine:
         seat: Seat,
         round_id: str,
         final_total_ms: int | None,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -910,11 +923,18 @@ class MatchEngine:
         await self._maybe_to_judging(store, record)
 
     async def on_forfeit(
-        self, match_id: str, seat: Seat, round_id: str, reason: str
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        reason: str,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         # 弃权即便对方仍在进行也可推进判定，但需当前回合匹配
         if store.current_round_id != round_id:
             return

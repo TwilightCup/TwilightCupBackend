@@ -90,7 +90,12 @@ def test_round_start_without_tags(world) -> None:  # type: ignore[no-untyped-def
         rid = rs["round_id"]
         for ws in (ws_a, ws_b):
             ws.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": 1000,
+                    "utc_ms": 1700000000001,
+                }
             )
         _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4)
         ws_r.send_json(
@@ -163,10 +168,20 @@ def test_rematch_inherits_tags(world) -> None:  # type: ignore[no-untyped-def]
             ws_r, ws_a, "CT01", ["Glitchless", "No EC"], retry=3
         )["round_id"]
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": None}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": None,
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": None}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": None,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4)
         ws_r.send_json(

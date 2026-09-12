@@ -57,6 +57,7 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
     ws.send_json(
         {
             "type": "level_time_upload",
+            "utc_ms": 1700000000002,
             "round_id": rid,
             "level_index": index,
             "this_level_ms": ms,
@@ -65,7 +66,14 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
 
 
 def _complete(ws, rid: str, final: int | None = None) -> None:  # type: ignore[no-untyped-def]
-    ws.send_json({"type": "project_complete", "round_id": rid, "final_total_ms": final})
+    ws.send_json(
+        {
+            "type": "project_complete",
+            "round_id": rid,
+            "final_total_ms": final,
+            "utc_ms": 1700000000001,
+        }
+    )
 
 
 def _match_with_scoring(db, session, method: ScoringMethod) -> Match:  # type: ignore[no-untyped-def]
@@ -115,13 +123,22 @@ def test_average_match_single_round(world) -> None:  # type: ignore[no-untyped-d
         # A：两次有效（1000/2000）+ 跳过一次 → 平均 1500（跳过剔除）
         _upload(ws_a, rid, 0, 1000)
         _upload(ws_a, rid, 1, 2000)
-        ws_a.send_json({"type": "attempt_skip", "round_id": rid, "attempt_index": 2})
+        ws_a.send_json({
+            "type": "attempt_skip",
+            "round_id": rid,
+            "attempt_index": 2,
+            "utc_ms": 1700000000002,
+        })
         _complete(ws_a, rid)
         # B：单次有效 1000 → 平均 1000
         _upload(ws_b, rid, 0, 1000)
         _complete(ws_b, rid)
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 2})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 2,
+        })
         result = _recv_until(ws_r, lambda x: x["type"] == "round_result")
         # 服务端判分（round_result）与下发口径一致：AVERAGE=算术平均
         assert result["score_a_ms"] == 1500
@@ -156,7 +173,11 @@ def test_fastest_match_single_round(world) -> None:  # type: ignore[no-untyped-d
         _upload(ws_b, rid, 0, 1200)
         _complete(ws_b, rid)
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 1})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 1,
+        })
         result = _recv_until(ws_r, lambda x: x["type"] == "round_result")
         assert result["score_a_ms"] == 1000  # FASTEST=最小值，现状不变
         assert result["score_b_ms"] == 1200
@@ -185,7 +206,11 @@ def test_multi_round_unaffected(world) -> None:  # type: ignore[no-untyped-def]
         _upload(ws_b, rid, 0, 500)
         _complete(ws_b, rid, final=2000)
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 1})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 1,
+        })
         result = _recv_until(ws_r, lambda x: x["type"] == "round_result")
         assert result["score_a_ms"] == 1000  # 多关取 final_total_ms
         assert result["score_b_ms"] == 2000
@@ -222,7 +247,11 @@ def test_rematch_preserves_single_scoring(world) -> None:  # type: ignore[no-unt
             _drain(ws_b, 6)
             _complete(ws_b, rid)
             _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-            ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 3})
+            ws_r.send_json({
+                "type": "referee_verdict",
+                "round_id": rid,
+                "verdict": 3,
+            })
             _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 1)
         # 重赛：沿用冻结的 pick 快照，直接手动开局
         ws_r.send_json({"type": "referee_manual_start"})

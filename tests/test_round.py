@@ -57,6 +57,7 @@ def test_full_round_a_wins(world) -> None:  # type: ignore[no-untyped-def]
         ws_a.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 1000,
@@ -64,11 +65,17 @@ def test_full_round_a_wins(world) -> None:  # type: ignore[no-untyped-def]
             }
         )
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 1000,
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 2000,
@@ -76,7 +83,12 @@ def test_full_round_a_wins(world) -> None:  # type: ignore[no-untyped-def]
             }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 2000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 2000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(
             ws_r,
@@ -106,10 +118,20 @@ def test_forfeit(world) -> None:  # type: ignore[no-untyped-def]
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
         ws_a.send_json(
-            {"type": "forfeit_signal", "round_id": rid, "reason": "multi_exit"}
+            {
+                "type": "forfeit_signal",
+                "round_id": rid,
+                "reason": "multi_exit",
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 5000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 5000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(
             ws_r,
@@ -146,10 +168,20 @@ def test_rematch(world) -> None:  # type: ignore[no-untyped-def]
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 1000,
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 1000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(
             ws_r,
@@ -195,10 +227,20 @@ def test_match_end_threshold_one_waits_for_manual_end(world) -> None:  # type: i
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 1000,
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 2000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 2000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(
             ws_r,
@@ -258,7 +300,12 @@ def test_end_match_rejected_before_threshold(world) -> None:  # type: ignore[no-
         rid = _drive_to_round(ws_r, ws_a)
         for ws, ms in ((ws_a, 1000), (ws_b, 2000)):
             ws.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": ms}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": ms,
+                    "utc_ms": 1700000000001,
+                }
             )
         _recv_until(
             ws_r,
@@ -318,10 +365,20 @@ def test_auto_end_when_all_players_and_director_disconnect(
                 _drain(ws, 5)
             rid = _drive_to_round(ws_r, ws_a)
             ws_a.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": 1000,
+                    "utc_ms": 1700000000001,
+                }
             )
             ws_b.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": 2000}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": 2000,
+                    "utc_ms": 1700000000001,
+                }
             )
             _recv_until(
                 ws_r,
@@ -377,7 +434,12 @@ def test_prep_blocked_after_manual_end(world) -> None:  # type: ignore[no-untype
         rid = _drive_to_round(ws_r, ws_a)
         for ws, ms in ((ws_a, 1000), (ws_b, 2000)):
             ws.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": ms}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": ms,
+                    "utc_ms": 1700000000001,
+                }
             )
         _recv_until(
             ws_r,

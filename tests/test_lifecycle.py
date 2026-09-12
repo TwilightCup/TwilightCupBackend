@@ -231,7 +231,12 @@ def test_admin_force_end_with_score_sets_winner(env) -> None:  # type: ignore[no
         rid = _recv_until(ws_a, lambda m: m["type"] == "round_start")["round_id"]
         for ws in (ws_a, ws_b):
             ws.send_json(
-                {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+                {
+                    "type": "project_complete",
+                    "round_id": rid,
+                    "final_total_ms": 1000,
+                    "utc_ms": 1700000000001,
+                }
             )
         _recv_until(
             ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4

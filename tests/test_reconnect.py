@@ -41,6 +41,7 @@ def test_idempotent_level_upload(world) -> None:  # type: ignore[no-untyped-def]
             ws_a.send_json(
                 {
                     "type": "level_time_upload",
+                    "utc_ms": 1700000000002,
                     "round_id": rid,
                     "level_index": 0,
                     "this_level_ms": 1000,
@@ -67,6 +68,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         ws_a.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 1500,
@@ -76,6 +78,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         ws_b.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 2000,

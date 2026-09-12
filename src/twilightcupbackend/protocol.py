@@ -61,6 +61,9 @@ class ClientLevelTimeUpload(BaseModel):
     # 完成时刻活跃的无效原因；缺省/空 = 有效。元素 "<Reason>"，
     # 不可原谅原因带 "!" 前缀（如 "!CheatCode"）。INVALID_ATTEMPT_REQ §3.2
     invalid_reasons: list[str] | None = None
+    # 节点检测时刻的 Unix UTC 毫秒（裁判/导播时钟来源；插件停发周期
+    # utc_timestamp 后由节点事件承载）
+    utc_ms: int
 
 
 class ClientAttemptSkip(BaseModel):
@@ -68,6 +71,8 @@ class ClientAttemptSkip(BaseModel):
     type: Literal["attempt_skip"] = "attempt_skip"
     round_id: str
     attempt_index: int
+    # 节点检测时刻的 Unix UTC 毫秒
+    utc_ms: int
 
 
 class ClientProjectComplete(BaseModel):
@@ -75,6 +80,8 @@ class ClientProjectComplete(BaseModel):
     type: Literal["project_complete"] = "project_complete"
     round_id: str
     final_total_ms: int | None = None
+    # 节点检测时刻的 Unix UTC 毫秒
+    utc_ms: int
 
 
 class ClientForfeitSignal(BaseModel):
@@ -82,6 +89,8 @@ class ClientForfeitSignal(BaseModel):
     type: Literal["forfeit_signal"] = "forfeit_signal"
     round_id: str
     reason: Literal["multi_exit", "single_exit_0_valid"]
+    # 节点检测时刻的 Unix UTC 毫秒
+    utc_ms: int
 
 
 class ClientReconnectResync(BaseModel):

@@ -48,6 +48,7 @@ def _upload(  # type: ignore[no-untyped-def]
 ) -> None:
     msg: dict = {
         "type": "level_time_upload",
+        "utc_ms": 1700000000002,
         "round_id": rid,
         "level_index": index,
         "this_level_ms": ms,
@@ -108,12 +109,20 @@ def test_single_invalid_attempt_recorded(world) -> None:  # type: ignore[no-unty
         assert a1["invalid_reasons"] == []
 
         # FASTEST：成绩取有效最小值 30s，不是 40s
-        _complete = {"type": "project_complete", "round_id": rid}
+        _complete = {
+            "type": "project_complete",
+            "round_id": rid,
+            "utc_ms": 1700000000001,
+        }
         ws_a.send_json(_complete)
         _upload(ws_b, rid, 0, 35_000)
         ws_b.send_json(_complete)
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 1})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 1,
+        })
         result = _recv_until(ws_r, lambda x: x["type"] == "round_result")
         assert result["score_a_ms"] == 30_000
 
@@ -139,11 +148,20 @@ def test_single_all_invalid_exit_forfeits(world) -> None:  # type: ignore[no-unt
         _upload(ws_a, rid, 0, 20_000, invalid=["!CheatCode"])
         _upload(ws_a, rid, 1, 15_000, invalid=["!TimeScale"])
         ws_a.send_json(
-            {"type": "forfeit_signal", "round_id": rid, "reason": "single_exit_0_valid"}
+            {
+                "type": "forfeit_signal",
+                "round_id": rid,
+                "reason": "single_exit_0_valid",
+                "utc_ms": 1700000000001,
+            }
         )
         # 进入判定需双方终态：B 正常完成补位
         _upload(ws_b, rid, 0, 35_000)
-        ws_b.send_json({"type": "project_complete", "round_id": rid})
+        ws_b.send_json({
+            "type": "project_complete",
+            "round_id": rid,
+            "utc_ms": 1700000000001,
+        })
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
 
         record = db.rounds.get(rid)
@@ -220,14 +238,28 @@ def test_multi_level_marks_informational(world) -> None:  # type: ignore[no-unty
 
         # 总分不受影响：正常完成判分走 final_total_ms
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 90_000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 90_000,
+                "utc_ms": 1700000000001,
+            }
         )
         _upload(ws_b, rid, 0, 50_000)
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 120_000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 120_000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(ws_r, lambda x: x["type"] == "phase_change" and x["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 1})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 1,
+        })
         result = _recv_until(ws_r, lambda x: x["type"] == "round_result")
         assert result["score_a_ms"] == 90_000
         assert result["score_b_ms"] == 120_000

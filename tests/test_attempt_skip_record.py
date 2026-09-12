@@ -36,6 +36,7 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
     ws.send_json(
         {
             "type": "level_time_upload",
+            "utc_ms": 1700000000002,
             "round_id": rid,
             "level_index": index,
             "this_level_ms": ms,
@@ -44,7 +45,12 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
 
 
 def _skip(ws, rid: str, index: int) -> None:  # type: ignore[no-untyped-def]
-    ws.send_json({"type": "attempt_skip", "round_id": rid, "attempt_index": index})
+    ws.send_json({
+        "type": "attempt_skip",
+        "round_id": rid,
+        "attempt_index": index,
+        "utc_ms": 1700000000002,
+    })
 
 
 def _status_of(ws_a, expect: int, max_msgs: int = 60):  # type: ignore[no-untyped-def]

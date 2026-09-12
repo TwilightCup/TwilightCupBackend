@@ -680,20 +680,25 @@ class ConnectionManager:
                 this_level_ms=t,
                 total_ms=tm,
                 invalid_reasons=ir,
+                utc_ms=utc,
             ):
                 if await self._require_player(conn):
                     await engine.on_level_time_upload(
-                        conn.match_id, conn.seat, rid, li, t, tm, ir
+                        conn.match_id, conn.seat, rid, li, t, tm, ir, utc
                     )
-            case ClientAttemptSkip(round_id=rid, attempt_index=ai):
+            case ClientAttemptSkip(round_id=rid, attempt_index=ai, utc_ms=utc):
                 if await self._require_player(conn):
-                    await engine.on_attempt_skip(conn.match_id, conn.seat, rid, ai)
-            case ClientProjectComplete(round_id=rid, final_total_ms=ft):
+                    await engine.on_attempt_skip(conn.match_id, conn.seat, rid, ai, utc)
+            case ClientProjectComplete(
+                round_id=rid, final_total_ms=ft, utc_ms=utc
+            ):
                 if await self._require_player(conn):
-                    await engine.on_project_complete(conn.match_id, conn.seat, rid, ft)
-            case ClientForfeitSignal(round_id=rid, reason=r):
+                    await engine.on_project_complete(
+                        conn.match_id, conn.seat, rid, ft, utc
+                    )
+            case ClientForfeitSignal(round_id=rid, reason=r, utc_ms=utc):
                 if await self._require_player(conn):
-                    await engine.on_forfeit(conn.match_id, conn.seat, rid, r)
+                    await engine.on_forfeit(conn.match_id, conn.seat, rid, r, utc)
             case _:
                 await self._send(
                     conn,

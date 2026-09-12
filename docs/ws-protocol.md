@@ -123,6 +123,7 @@
 | `this_level_ms` | int | 是 | — |  |
 | `total_ms` | int | None | 否 | None |  |
 | `invalid_reasons` | list[str] | None | 否 | None |  |
+| `utc_ms` | int | 是 | — |  |
 
 ### `ClientAttemptSkip`
 
@@ -134,6 +135,7 @@
 | --- | --- | --- | --- | --- |
 | `round_id` | str | 是 | — |  |
 | `attempt_index` | int | 是 | — |  |
+| `utc_ms` | int | 是 | — |  |
 
 ### `ClientProjectComplete`
 
@@ -145,6 +147,7 @@
 | --- | --- | --- | --- | --- |
 | `round_id` | str | 是 | — |  |
 | `final_total_ms` | int | None | 否 | None |  |
+| `utc_ms` | int | 是 | — |  |
 
 ### `ClientForfeitSignal`
 
@@ -156,6 +159,7 @@
 | --- | --- | --- | --- | --- |
 | `round_id` | str | 是 | — |  |
 | `reason` | 'multi_exit' | 'single_exit_0_valid' | 是 | — |  |
+| `utc_ms` | int | 是 | — |  |
 
 ### `ClientReconnectResync`
 

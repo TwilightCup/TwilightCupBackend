@@ -143,6 +143,7 @@ def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-un
                         "type": "project_complete",
                         "round_id": rid,
                         "final_total_ms": 1000 + round_no,
+                        "utc_ms": 1700000000001,
                     }
                 )
             _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4)
