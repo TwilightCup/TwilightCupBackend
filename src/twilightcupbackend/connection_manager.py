@@ -150,6 +150,12 @@ class _DirectorState:
     soon_started_ms: int | None = None  # 折算后的起点（毫秒，已扣暂停）
     soon_paused_ms: int | None = None
     config: dict[str, Any] = field(default_factory=dict)  # config_update 覆盖合并
+    # frame_align：导播帧级对齐权威虚拟时间 T（None=该场从未收到过 frame_align，
+    # 否则不对外补发）。t_us 为 epoch 微秒，0 也是合法值（前端按未就绪兜底）；
+    # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。
+    frame_align_t_us: int | None = None
+    frame_align_ready_a: bool = False
+    frame_align_ready_b: bool = False
 
 
 class ConnectionManager:
@@ -547,6 +553,11 @@ class ConnectionManager:
                         ),
                     ),
                 )
+                return
+            # 只读/已结束路径：放行的消息仍需派发——活跃导播的舞台操控
+            # (ClientDirectorCommand) 要走到 _dispatch 才能转发给同账号其他
+            # 导播连接；已结束只读仅放行订阅/心跳，在 _dispatch 为 no-op。
+            await self._dispatch(conn, msg)
             return
 
         await self._dispatch(conn, msg)
@@ -855,6 +866,12 @@ class ConnectionManager:
                 cfg = payload.get("config")
                 if isinstance(cfg, dict):
                     st.config.update(cfg)
+            case "frame_align":
+                # 最近一条直接覆盖：t_us/ready_a/ready_b 原样暂存，供新连接
+                # state_sync 补发。t_us 取 payload.get（0 保留）；ready 缺省 False。
+                st.frame_align_t_us = payload.get("t_us")
+                st.frame_align_ready_a = bool(payload.get("ready_a", False))
+                st.frame_align_ready_b = bool(payload.get("ready_b", False))
 
     def _director_state_payload(
         self, account_id: str, match_id: str
@@ -867,7 +884,7 @@ class ConnectionManager:
         st = self._director_state.get((account_id, match_id))
         if st is None:
             return None
-        return {
+        out: dict[str, Any] = {
             "scene": st.scene,
             "soon": {
                 "target_ms": st.soon_target_ms,
@@ -877,6 +894,14 @@ class ConnectionManager:
             },
             "config": st.config,
         }
+        # frame_align 独立键、不合并进 state_sync：仅该场收到过才补发权威 T。
+        if st.frame_align_t_us is not None:
+            out["frame_align"] = {
+                "t_us": st.frame_align_t_us,
+                "ready_a": st.frame_align_ready_a,
+                "ready_b": st.frame_align_ready_b,
+            }
+        return out
 
     async def broadcast_to_other_directors(
         self, sender: Connection, msg: ServerMessage

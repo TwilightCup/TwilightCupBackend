@@ -333,11 +333,11 @@
 
 - type：'director_command'
 
-- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）与直播配置实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、原样透传）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。
+- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）、直播配置实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、原样透传）与导播帧级对齐（``frame_align``，payload ``{"t_us": <epoch 微秒>, "ready_a"?, "ready_b"?}``，t_us 为权威虚拟时间，ready_a/b 为舞台侧 A/B 是否已可上屏）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方；``frame_align`` 另暂存最近一条供 ``state_sync`` 补发。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 'config_update' | 是 | — |  |
+| `action` | 'switch_scene' | 'soon_start' | 'soon_pause' | 'soon_reset' | 'soon_set_target' | 'config_update' | 'frame_align' | 是 | — |  |
 | `payload` | dict[str, Any] | 否 | <dict> |  |
 
 ### `ClientUtcTimestamp`
@@ -701,7 +701,7 @@
 
 - type：'director_cmd'
 
-- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。另含服务端主动下发的 ``state_sync``：DIRECTOR 连接 ``auth_ok`` 后若有状态暂存，补发最近的场景/倒计时/直播配置（payload ``{"scene"/"soon"/"config"}``，soon 内时间戳均为服务器毫秒、附 ``now_ms`` 供时钟校正）。
+- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。另含服务端主动下发的 ``state_sync``：DIRECTOR 连接 ``auth_ok`` 后若有状态暂存，补发最近的场景/倒计时/直播配置（payload ``{"scene"/"soon"/"config"}``，soon 内时间戳均为服务器毫秒、附 ``now_ms`` 供时钟校正）。若存有最近一条 ``frame_align``，payload 另含独立键 ``"frame_align": {"t_us"/"ready_a"/"ready_b"}``（与 scene/soon/config 并列、不合并），供刷新/重连后的控制台与舞台立刻拿到当前权威虚拟时间 T 与就绪状态。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |

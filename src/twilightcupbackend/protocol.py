@@ -263,6 +263,10 @@ class ClientDirectorCommand(BaseModel):
     config_update: {"config": {...}}（直播配置实时下发：rtmpA/rtmpB/hlsA/
     hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
     服务端不校验、原样透传，与其余 action 的宽松口径一致）。
+    frame_align: {"t_us": ..., "ready_a": ..., "ready_b": ...}（导播帧级
+    对齐：t_us 为当前权威虚拟时间（epoch 微秒），ready_a/b 为舞台侧 A/B
+    是否已可上屏；随 director_cmd 扇出给同账号其他导播连接，并暂存供
+    state_sync 回放，保证控制台与舞台 A/B 四路共用同一 T、就绪状态一致）。
     """
 
     model_config = _cfg
@@ -275,6 +279,7 @@ class ClientDirectorCommand(BaseModel):
         "soon_reset",
         "soon_set_target",
         "config_update",
+        "frame_align",
     ]
     # 指令载荷（见类 docstring）
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -627,7 +632,9 @@ class SrvDirectorCommand(BaseModel):
     另有服务端主动下发的 action="state_sync"：DIRECTOR 连接 auth_ok 后若
     该 (account_id, match_id) 有状态暂存，补发 payload={"scene": ...,
     "soon": {"target_ms"/"started_at"/"paused_at"/"now_ms"（服务器毫秒）},
-    "config": {...}}，消除舞台晚开收不到状态的问题。
+    "config": {...}}，消除舞台晚开收不到状态的问题。若存有 frame_align，
+    payload 另含 "frame_align": {"t_us"/"ready_a"/"ready_b"}，补发最近一次
+    导播帧级对齐权威 T（与 scene/soon/config 并列，独立键、不合并）。
     """
 
     model_config = _cfg

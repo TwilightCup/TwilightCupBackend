@@ -298,3 +298,114 @@ def test_director_state_keyed_by_account_and_match(world) -> None:  # type: igno
         p = cm._director_state_payload(acc, mid)
         assert p is not None and p["scene"] == scene
     assert cm._director_state_payload("accX", "m1") is None
+
+
+def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ignore[no-untyped-def]
+    """ "frame_align 扇出给舞台 + 新连接 state_sync 补发权威 T 与就绪状态。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
+    ):
+        _drain(ws_console, 5)
+        _drain(ws_stage, 5)
+        _drain(ws_pa, 5)
+        # 控制台刷新 frame_align → 舞台扇出原样、发送方不回执
+        # （pa 连入在 stage 队列里前置了一条 seat_state 在线广播，需跨过）
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "frame_align",
+                "payload": {
+                    "t_us": 1710000000000000,
+                    "ready_a": True,
+                    "ready_b": False,
+                },
+            }
+        )
+        r = _recv_until(ws_stage, lambda m: m.get("action") == "frame_align")
+        assert r == {
+            "type": "director_cmd",
+            "action": "frame_align",
+            "payload": {"t_us": 1710000000000000, "ready_a": True, "ready_b": False},
+        }
+        # 新开舞台连接 auth_ok 后，state_sync 补发含 frame_align（独立键）
+        with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage2:
+            p = _state_sync(ws_stage2)
+            assert p["frame_align"] == {
+                "t_us": 1710000000000000,
+                "ready_a": True,
+                "ready_b": False,
+            }
+        # 发送方不回执：以全员聊天作序标，此前不得出现 director_cmd
+        ws_pa.send_json({"type": "chat", "text": "after"})
+        for _ in range(10):
+            nxt = ws_console.receive_json()
+            assert nxt["type"] != "director_cmd"
+            if nxt.get("type") == "chat" and nxt.get("text") == "after":
+                break
+        else:
+            raise AssertionError("控制台未收到序标聊天")
+
+
+def test_frame_align_last_write_wins(world) -> None:  # type: ignore[no-untyped-def]
+    """frame_align 覆盖暂存最近一条：t_us/ready 全 0/false 时仍补发（前端兜底）。"""
+    client, _, _, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
+    ):
+        _drain(ws_console, 5)
+        _drain(ws_pa, 5)
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "frame_align",
+                "payload": {"t_us": 123, "ready_a": True, "ready_b": True},
+            }
+        )
+        # 舞台未连（无双人），下一条 frame_align 覆盖暂存
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "frame_align",
+                "payload": {"t_us": 0, "ready_a": False, "ready_b": False},
+            }
+        )
+        # 缺省 ready 也按 False：第三条只带 t_us
+        ws_console.send_json(
+            {
+                "type": "director_command",
+                "action": "frame_align",
+                "payload": {"t_us": 456},
+            }
+        )
+        with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage:
+            p = _state_sync(ws_stage)
+            assert p["frame_align"] == {"t_us": 456, "ready_a": False, "ready_b": False}
+
+
+def test_frame_align_absent_without_history(world) -> None:  # type: ignore[no-untyped-def]
+    """该场从未收到 frame_align → 即使是 state_sync 也不含 frame_align 键。"""
+    client, _, _, tokens = world
+    with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_dri:
+        _drain(ws_dri, 5)
+        ws_dri.send_json(
+            {
+                "type": "director_command",
+                "action": "config_update",
+                "payload": {"config": {"rtmpA": "rtmp://a/live"}},
+            }
+        )
+        ws_dri.send_json(
+            {
+                "type": "director_command",
+                "action": "soon_set_target",
+                "payload": {"target_ms": 300000},
+            }
+        )
+        with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage:
+            p = _state_sync(ws_stage)
+            assert "frame_align" not in p
+            assert p["config"] == {"rtmpA": "rtmp://a/live"}
