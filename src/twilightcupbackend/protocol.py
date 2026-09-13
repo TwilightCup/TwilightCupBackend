@@ -263,10 +263,13 @@ class ClientDirectorCommand(BaseModel):
     config_update: {"config": {...}}（直播配置实时下发：rtmpA/rtmpB/hlsA/
     hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
     服务端不校验、原样透传，与其余 action 的宽松口径一致）。
-    frame_align: {"t_us": ..., "ready_a": ..., "ready_b": ...}（导播帧级
-    对齐：t_us 为当前权威虚拟时间（epoch 微秒），ready_a/b 为舞台侧 A/B
-    是否已可上屏；随 director_cmd 扇出给同账号其他导播连接，并暂存供
-    state_sync 回放，保证控制台与舞台 A/B 四路共用同一 T、就绪状态一致）。
+    frame_align: {"t_us", "ready_a"?, "ready_b"?, "src"}（导播帧级对齐：
+    t_us 为权威虚拟时间（epoch 微秒），ready_a/b 为舞台侧 A/B 是否已可上屏，
+    src 为广播文档的唯一 id。服务端按 (account_id, match_id) 做唯一权威选举：
+    仅当前权威（src === align_authority_src）或权威缺席/静默超时（5s，断线/
+    倒台）后的接任 src 被采纳存储并扇出，非权威一律忽略——多舞台并存时存储
+    不闪、观众看不到第二套 T。权威接任时额外广播 align_authority {src} 通知
+    同场连接该跟谁；state_sync 回放同时带 align_authority_src 供晚连一致跟随）。
     """
 
     model_config = _cfg
@@ -633,8 +636,9 @@ class SrvDirectorCommand(BaseModel):
     该 (account_id, match_id) 有状态暂存，补发 payload={"scene": ...,
     "soon": {"target_ms"/"started_at"/"paused_at"/"now_ms"（服务器毫秒）},
     "config": {...}}，消除舞台晚开收不到状态的问题。若存有 frame_align，
-    payload 另含 "frame_align": {"t_us"/"ready_a"/"ready_b"}，补发最近一次
-    导播帧级对齐权威 T（与 scene/soon/config 并列，独立键、不合并）。
+    payload 另含 "frame_align": {"t_us"/"ready_a"/"ready_b"} 与
+    "align_authority_src": <src>，补发最近一次导播帧级对齐的权威 T 与其唯一
+    权威 src（与 scene/soon/config 并列，独立键、不合并）。
     """
 
     model_config = _cfg

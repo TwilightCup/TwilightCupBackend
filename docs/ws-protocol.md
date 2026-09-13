@@ -333,7 +333,7 @@
 
 - type：'director_command'
 
-- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）、直播配置实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、原样透传）与导播帧级对齐（``frame_align``，payload ``{"t_us": <epoch 微秒>, "ready_a"?, "ready_b"?}``，t_us 为权威虚拟时间，ready_a/b 为舞台侧 A/B 是否已可上屏）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方；``frame_align`` 另暂存最近一条供 ``state_sync`` 补发。
+- 导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/``soon_set_target``，set_target payload ``{"target_ms": ...}``）、直播配置实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、原样透传）与导播帧级对齐（``frame_align``，payload ``{"t_us": <epoch 微秒>, "ready_a"?, "ready_b"?, "src"}``，t_us 为权威虚拟时间，ready_a/b 为舞台侧 A/B 是否已可上屏，src 为广播文档的唯一 id）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方；``frame_align`` 另暂存最近一条供 ``state_sync`` 补发。``frame_align`` 后端按（账号+比赛）做唯一权威选举：仅当前权威（``src`` 等于 ``align_authority_src``）或权威缺席/静默超时（5s，断线/倒台）后的接任 ``src`` 被采纳存储并扇出，非权威一律忽略（多舞台并存时存储不闪、观众看不到第二套 T）；权威接任时额外广播 ``align_authority {src}`` 通知同场连接该跟谁。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -701,7 +701,7 @@
 
 - type：'director_cmd'
 
-- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。另含服务端主动下发的 ``state_sync``：DIRECTOR 连接 ``auth_ok`` 后若有状态暂存，补发最近的场景/倒计时/直播配置（payload ``{"scene"/"soon"/"config"}``，soon 内时间戳均为服务器毫秒、附 ``now_ms`` 供时钟校正）。若存有最近一条 ``frame_align``，payload 另含独立键 ``"frame_align": {"t_us"/"ready_a"/"ready_b"}``（与 scene/soon/config 并列、不合并），供刷新/重连后的控制台与舞台立刻拿到当前权威虚拟时间 T 与就绪状态。
+- 定向转发导播控制台操控指令（action/payload 原样来自 ``director_command``）：仅发发送方之外的同账号 DIRECTOR 连接（OBS 舞台），每个导播只控自己的舞台；选手/裁判与其他账号导播均不收。另含服务端主动下发的 ``state_sync``：DIRECTOR 连接 ``auth_ok`` 后若有状态暂存，补发最近的场景/倒计时/直播配置（payload ``{"scene"/"soon"/"config"}``，soon 内时间戳均为服务器毫秒、附 ``now_ms`` 供时钟校正）。若存有最近一条 ``frame_align``，payload 另含独立键 ``"frame_align": {"t_us"/"ready_a"/"ready_b"}`` 与 ``"align_authority_src": <src>``（与 scene/soon/config 并列、不合并），供刷新/重连后的控制台与舞台立刻拿到当前权威虚拟时间 T、就绪状态与唯一权威 src。主动下发的 ``align_authority`` action 在帧级对齐权威接任时发送，payload ``{"src": <新权威 src>}``，通知同场其他连接该跟随谁。
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |

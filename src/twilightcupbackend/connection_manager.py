@@ -136,6 +136,11 @@ def _now_ms() -> int:
     return int(now_ts().timestamp() * 1000)
 
 
+# 帧级对齐权威静默阈值（毫秒）：当前权威超时未继续上报 frame_align（断线/倒台）
+# 时，允许其他 src 接任权威。建议 5s，见 frame_align 权威选举。
+_ALIGN_AUTHORITY_TIMEOUT_MS = 5_000
+
+
 @dataclass
 class _DirectorState:
     """导播操控状态暂存（state_sync 回放用）。
@@ -152,10 +157,14 @@ class _DirectorState:
     config: dict[str, Any] = field(default_factory=dict)  # config_update 覆盖合并
     # frame_align：导播帧级对齐权威虚拟时间 T（None=该场从未收到过 frame_align，
     # 否则不对外补发）。t_us 为 epoch 微秒，0 也是合法值（前端按未就绪兜底）；
-    # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。
+    # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。该 key 的权威 src 由
+    # align_authority_src 持有（多舞台并存时唯一权威、其余忽略）；last_ms 为
+    # 最近一次被采纳（该权威）frame_align 的服务器毫秒，用于超时接管判定。
     frame_align_t_us: int | None = None
     frame_align_ready_a: bool = False
     frame_align_ready_b: bool = False
+    align_authority_src: str | None = None
+    align_authority_last_ms: int | None = None
 
 
 class ConnectionManager:
@@ -307,13 +316,9 @@ class ConnectionManager:
                 # 当前选图同步一条定向 System 提示（仅该选手可见、不落库；
                 # 文案与 pick.selected 同构，取自冻结快照，含词条/重试）
                 pick = store.pick_announced.pick
-                tags_suffix = (
-                    f" [{', '.join(pick.tags)}]" if pick.tags else ""
-                )
+                tags_suffix = f" [{', '.join(pick.tags)}]" if pick.tags else ""
                 retry_suffix = (
-                    f" x{pick.retry_count}"
-                    if pick.retry_count is not None
-                    else ""
+                    f" x{pick.retry_count}" if pick.retry_count is not None else ""
                 )
                 await self._send(
                     conn,
@@ -548,9 +553,7 @@ class ConnectionManager:
                     conn,
                     SrvError(
                         code=403,
-                        msg=self.tr(
-                            conn.match_id, "error.match_readonly"
-                        ),
+                        msg=self.tr(conn.match_id, "error.match_readonly"),
                     ),
                 )
                 return
@@ -584,12 +587,26 @@ class ConnectionManager:
             case ClientDirectorCommand(action=act, payload=pl):
                 # 导播控制台 → 同账号其他导播连接（OBS 舞台）：原样转发，
                 # 不落库、不回执 sender（瞬时操控指令，控制台无需回声）；
-                # 同时更新状态暂存供新连接 state_sync 回放
+                # 同时更新状态暂存供新连接 state_sync 回放。
+                # frame_align 经唯一权威选举：仅被采纳（权威或其接任）才扇出，
+                # 非权威不转发（观众侧看不到第二套 T）。
                 if await self._require_seat(conn, Seat.DIRECTOR):
-                    self._update_director_state(conn.account_id, conn.match_id, act, pl)
-                    await self.broadcast_to_other_directors(
-                        conn, SrvDirectorCommand(action=act, payload=pl)
+                    should_relay, authority_changed = self._update_director_state(
+                        conn.account_id, conn.match_id, act, pl
                     )
+                    if should_relay:
+                        await self.broadcast_to_other_directors(
+                            conn, SrvDirectorCommand(action=act, payload=pl)
+                        )
+                    # 可选：权威接任时广播 align_authority 通知同场其他连接该跟谁
+                    if authority_changed:
+                        await self.broadcast_to_other_directors(
+                            conn,
+                            SrvDirectorCommand(
+                                action="align_authority",
+                                payload={"src": pl.get("src")},
+                            ),
+                        )
             case ClientDraftSync(state=st):
                 # 裁判上报 ban/pick 草稿状态 → 存储 + 转发给全员（含导播）
                 if await self._require_seat(conn, Seat.REFEREE):
@@ -700,9 +717,7 @@ class ConnectionManager:
             case ClientAttemptSkip(round_id=rid, attempt_index=ai, utc_ms=utc):
                 if await self._require_player(conn):
                     await engine.on_attempt_skip(conn.match_id, conn.seat, rid, ai, utc)
-            case ClientProjectComplete(
-                round_id=rid, final_total_ms=ft, utc_ms=utc
-            ):
+            case ClientProjectComplete(round_id=rid, final_total_ms=ft, utc_ms=utc):
                 if await self._require_player(conn):
                     await engine.on_project_complete(
                         conn.match_id, conn.seat, rid, ft, utc
@@ -832,13 +847,18 @@ class ConnectionManager:
 
     def _update_director_state(
         self, account_id: str, match_id: str, action: str, payload: dict[str, Any]
-    ) -> None:
-        """每条导播指令到达时更新 (account_id, match_id) 状态暂存（回放用）。
+    ) -> tuple[bool, bool]:
+        """更新 (account_id, match_id) 状态暂存（回放用）。
+
+        返回 (是否扇出本条, 权威是否变更)。
 
         倒计时时间线由服务端折算：start 记起点（自暂停恢复时前移已进行的
         有效时长，即暂停补偿；运行中重复 start 幂等不重置）；pause 仅在
         进行中生效；reset 清 started/paused 但保留 target_ms；config 为
         覆盖合并（八键可部分缺失）。payload 值不校验，与广播口径一致。
+        非 frame_align 恒 (True, False)（保留原转发语义）；frame_align 按唯一
+        权威选举：仅当前权威（或超时/缺席后接任的新 src）被采纳返回 (True, ...)，
+        非权威一律 (False, False)（不存储、不扇出）。
         """
         st = self._director_state.setdefault((account_id, match_id), _DirectorState())
         now = _now_ms()
@@ -867,11 +887,33 @@ class ConnectionManager:
                 if isinstance(cfg, dict):
                     st.config.update(cfg)
             case "frame_align":
-                # 最近一条直接覆盖：t_us/ready_a/ready_b 原样暂存，供新连接
-                # state_sync 补发。t_us 取 payload.get（0 保留）；ready 缺省 False。
-                st.frame_align_t_us = payload.get("t_us")
-                st.frame_align_ready_a = bool(payload.get("ready_a", False))
-                st.frame_align_ready_b = bool(payload.get("ready_b", False))
+                # 唯一权威选举：仅当前权威（或权威缺席/超时后的新 src）被采纳、
+                # 存储并扇出；其余 src 的 frame_align 一律忽略（多舞台并存时存
+                # 储不闪、观众看不到第二套 T）。详见证广播文档帧级对齐。
+                src = payload.get("src")
+                adopted = False
+                changed = False
+                if src is not None:
+                    if src == st.align_authority_src:
+                        adopted = True
+                    elif st.align_authority_src is None or (
+                        st.align_authority_last_ms is not None
+                        and now - st.align_authority_last_ms
+                        > _ALIGN_AUTHORITY_TIMEOUT_MS
+                    ):
+                        # 权威缺席（首条）或超时（断线/倒台）→ 新 src 接任
+                        st.align_authority_src = src
+                        adopted = True
+                        changed = True
+                if adopted:
+                    st.frame_align_t_us = payload.get("t_us")
+                    st.frame_align_ready_a = bool(payload.get("ready_a", False))
+                    st.frame_align_ready_b = bool(payload.get("ready_b", False))
+                    st.align_authority_last_ms = now  # 刷新权威心跳起点
+                # (是否扇出本条, 是否发生权威接任)
+                return (adopted, changed)
+        # 非 frame_align 动作：保持既有「更新即转发」语义
+        return (True, False)
 
     def _director_state_payload(
         self, account_id: str, match_id: str
@@ -901,6 +943,9 @@ class ConnectionManager:
                 "ready_a": st.frame_align_ready_a,
                 "ready_b": st.frame_align_ready_b,
             }
+        # 当前帧级对齐权威 src：让晚连/观众/权威自身一致跟随同一 src。
+        if st.align_authority_src is not None:
+            out["align_authority_src"] = st.align_authority_src
         return out
 
     async def broadcast_to_other_directors(
