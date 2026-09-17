@@ -250,6 +250,25 @@ class ClientDirectorSubscribe(BaseModel):
     type: Literal["director_subscribe"] = "director_subscribe"
 
 
+class FrameAlignStatus(BaseModel):
+    """Authenticated page lease; all timestamps used for expiry are server-owned."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    connection_id: str
+    account_id: str
+    match_id: str
+    authority_epoch: int = Field(ge=0, le=2**53 - 1)
+    seq: int = Field(ge=0, le=2**53 - 1)
+    capability: bool
+    visibility: Literal["visible", "hidden"]
+    progress_t_us: int = Field(ge=0, le=2**53 - 1)
+    media_ready: bool
+    decode_ready: bool
+    state: Literal["running", "media_wait", "paused", "relinquish"]
+    active_sides: list[Literal["A", "B"]] = Field(max_length=2)
+    waiting_sides: list[Literal["A", "B"]] = Field(max_length=2)
+
+
 class ClientDirectorCommand(BaseModel):
     """导播控制台发往同账号其他导播连接（OBS 舞台）的操控指令。
 
@@ -270,7 +289,9 @@ class ClientDirectorCommand(BaseModel):
     最早连接的 publisher WebSocket，断开后按连接顺序接任；5 秒静默只冻结。
     非 source、旧 epoch/seq、回退 T 均忽略。
     输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
-    完整字段、生命周期及 627c34a 兼容边界见 docs/frame-align-authority.md。
+    frame_align_status: FrameAlignStatus 严格类型的页面租约；首次合法上报启用
+    该账号+比赛的能力/活跃租约选举。旧连接顺序模式仅适用于未启用的范围。
+    完整字段与生命周期见 docs/frame-align-authority.md。
     """
 
     model_config = _cfg
@@ -284,6 +305,7 @@ class ClientDirectorCommand(BaseModel):
         "soon_set_target",
         "config_update",
         "frame_align",
+        "frame_align_status",
     ]
     # 指令载荷（见类 docstring）
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -368,6 +390,7 @@ class SrvAuthOk(BaseModel):
     player_b_name: str | None = None  # 选手 B 展示名
 
     connection_id: str | None = None
+    align_lease_required: bool = False
     align_role: Literal["publisher", "follower"] | None = None
     align_authority_src: str | None = None
     authority_epoch: int | None = None

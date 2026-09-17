@@ -15,8 +15,17 @@ from fastapi import WebSocket
 
 from .config import settings
 from .datatypes import Match, MatchPhase, Seat
-from .protocol import PreloadStatus, SrvLiveTime, SrvPickAnnounced
+from .protocol import FrameAlignStatus, PreloadStatus, SrvLiveTime, SrvPickAnnounced
 from .timer_service import CountdownTimer, CounterTimer
+
+
+@dataclass
+class FrameAlignLease:
+    status: FrameAlignStatus | None = None
+    received_ms: int = 0
+    progressed_ms: int = 0
+    eligible_since_ms: int | None = None
+    blocked: bool = False
 
 
 @dataclass(eq=False)
@@ -34,6 +43,7 @@ class Connection:
     director_order: int = 0
     auth_sent: bool = False
     authority_epoch_seen: int = 0
+    align_lease: FrameAlignLease = field(default_factory=FrameAlignLease)
 
     @property
     def read_only(self) -> bool:

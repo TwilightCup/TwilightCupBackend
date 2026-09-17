@@ -57,6 +57,7 @@ from .protocol import (
     ClientSubsegmentHit,
     ClientSubsegmentSample,
     ClientUtcTimestamp,
+    FrameAlignStatus,
     ServerMessage,
     SrvAuthError,
     SrvAuthOk,
@@ -140,6 +141,12 @@ def _now_ms() -> int:
 
 # 帧级对齐静默阈值（毫秒）：超时只冻结；主连接离开才按连接顺序选下一位。
 _ALIGN_AUTHORITY_TIMEOUT_MS = 5_000
+_ALIGN_STABILITY_MS = 2_000
+_ALIGN_TAKEOVER_MS = 3_000
+
+
+def _align_now_ms() -> int:
+    return time.monotonic_ns() // 1_000_000
 
 
 @dataclass
@@ -171,6 +178,8 @@ class _DirectorState:
     align_seq: int = 0
     align_client_seq: int | None = None
     has_history: bool = False
+    lease_mode: bool = False
+    takeover_deadline_ms: int | None = None
     align_anchor: dict[str, Any] | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -311,6 +320,7 @@ class ConnectionManager:
                 else None,
                 align_authority_src=st.align_authority_src if st else None,
                 authority_epoch=auth_epoch if seat == Seat.DIRECTOR else None,
+                align_lease_required=st.lease_mode if st else False,
                 account_id=account.id,
                 display_name=account.display_name,
                 seat=seat.name,
@@ -495,15 +505,45 @@ class ConnectionManager:
         st = self._director_state.setdefault(
             (conn.account_id, store.id), _DirectorState()
         )
-        if st.align_owner is None:
+        if st.align_owner is None and not st.lease_mode:
             self._select_oldest(store, conn.account_id, st)
 
     def _select_oldest(
         self, store: MatchStore, account_id: str, st: _DirectorState
     ) -> None:
         candidates = [c for c in store.directors if c.account_id == account_id]
-        owner = min(candidates, key=lambda c: c.director_order) if candidates else None
+        now = _align_now_ms()
+        if st.lease_mode:
+            candidates = [c for c in candidates if self._lease_candidate(c, now)]
+        owner = (
+            min(
+                candidates,
+                key=lambda c: (
+                    not (
+                        st.lease_mode
+                        and c.align_lease.status
+                        and c.align_lease.status.visibility == "visible"
+                        and now - c.align_lease.progressed_ms
+                        <= _ALIGN_AUTHORITY_TIMEOUT_MS
+                    ),
+                    c.director_order,
+                ),
+            )
+            if candidates
+            else None
+        )
+        self._set_align_owner(st, owner, "connection_change")
+
+    def _set_align_owner(
+        self, st: _DirectorState, owner: Connection | None, reason: str
+    ) -> None:
+        if st.align_owner is owner:
+            return
+        previous = st.align_owner
         st.align_owner = owner
+        st.takeover_deadline_ms = (
+            _align_now_ms() + _ALIGN_TAKEOVER_MS if st.lease_mode and owner else None
+        )
         st.align_authority_src = owner.connection_id if owner else None
         st.align_epoch = self._next_authority_epoch()
         st.align_seq = 0
@@ -525,8 +565,19 @@ class ConnectionManager:
                 "effective_at_ms": now,
                 "server_time_ms": now,
                 "server_now_ms": now,
-                "reason": "waiting_publisher" if owner else "no_publisher",
+                "reason": "waiting_publisher" if owner else reason,
+                "active_sides": st.align_anchor.get("active_sides", ["A", "B"]),
+                "waiting_sides": st.align_anchor.get("waiting_sides", []),
             }
+        scope_conn = owner or previous
+        self.logger.info(
+            "Frame authority account=%s match=%s epoch=%s source=%s reason=%s",
+            scope_conn.account_id if scope_conn else None,
+            scope_conn.match_id if scope_conn else None,
+            st.align_epoch,
+            st.align_authority_src,
+            reason,
+        )
 
     async def _send_authority(self, conn: Connection, st: _DirectorState) -> None:
         epoch = st.align_epoch
@@ -542,6 +593,10 @@ class ConnectionManager:
                     "role": "publisher" if st.align_owner is conn else "follower",
                     "account_id": conn.account_id,
                     "match_id": conn.match_id,
+                    "lease_required": st.lease_mode,
+                    "lease_timeout_ms": _ALIGN_AUTHORITY_TIMEOUT_MS,
+                    "takeover_timeout_ms": _ALIGN_TAKEOVER_MS,
+                    "t_floor_us": st.frame_align_t_us,
                 },
             ),
         )
@@ -735,6 +790,9 @@ class ConnectionManager:
                         (conn.account_id, conn.match_id), _DirectorState()
                     )
                     async with st.align_lock:
+                        if act == "frame_align_status":
+                            await self._receive_align_status(conn, st, pl)
+                            return
                         if act == "frame_align":
                             await self._announce_authority(
                                 conn.account_id, conn.match_id, st
@@ -1063,6 +1121,27 @@ class ConnectionManager:
         """
         if conn is None or st.align_owner is not conn:
             return False, False
+        if st.lease_mode:
+            lease = conn.align_lease
+            status = lease.status
+            if (
+                status is None
+                or not status.capability
+                or not status.media_ready
+                or not status.decode_ready
+                or status.state != "running"
+                or _align_now_ms() - lease.received_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
+                or st.takeover_deadline_ms is not None
+                or "seq" not in payload
+                or payload.get("epoch", payload.get("authority_epoch"))
+                != st.align_epoch
+            ):
+                return False, False
+            payload = {
+                **payload,
+                "active_sides": status.active_sides,
+                "waiting_sides": status.waiting_sides,
+            }
         src = conn.connection_id
         t = payload.get("t_us")
         rate = payload.get("rate", 1.0)
@@ -1161,12 +1240,20 @@ class ConnectionManager:
         now = _now_ms()
         return {**(st.align_anchor or {}), "server_time_ms": now, "server_now_ms": now}
 
-    def _freeze_align(self, st: _DirectorState) -> bool:
+    def _freeze_align(
+        self, st: _DirectorState, reason: str = "publisher_silent"
+    ) -> bool:
         a = st.align_anchor
         if a is None or a.get("stale"):
             return False
         now = _now_ms()
         # The backend never advances T: freeze exactly the last publisher value.
+        self.logger.info(
+            "Frame freeze epoch=%s source=%s reason=%s",
+            st.align_epoch,
+            st.align_authority_src,
+            reason,
+        )
         st.align_seq += 1
         st.frame_align_t_us = a["t_us"]
         st.frame_align_ready_a = st.frame_align_ready_b = False
@@ -1176,6 +1263,7 @@ class ConnectionManager:
             "seq": st.align_seq,
             "frozen": True,
             "stale": True,
+            "reason": reason,
             "ready_a": False,
             "ready_b": False,
             "effective_at_ms": now,
@@ -1202,11 +1290,174 @@ class ConnectionManager:
         while self._align_notifications:
             await asyncio.gather(*self._align_notifications)
 
+    def _lease_candidate(self, conn: Connection, now: int) -> bool:
+        lease = conn.align_lease
+        status = lease.status
+        return bool(
+            status
+            and status.capability
+            and status.media_ready
+            and status.decode_ready
+            and status.state == "running"
+            and status.active_sides
+            and not lease.blocked
+            and now - lease.received_ms <= _ALIGN_AUTHORITY_TIMEOUT_MS
+            and lease.eligible_since_ms is not None
+            and now - lease.eligible_since_ms >= _ALIGN_STABILITY_MS
+        )
+
+    async def _receive_align_status(
+        self, conn: Connection, st: _DirectorState, payload: dict[str, Any]
+    ) -> None:
+        try:
+            status = FrameAlignStatus.model_validate(payload)
+        except ValidationError:
+            await self._send(conn, SrvError(code=400, msg="Invalid frame_align_status"))
+            return
+        store = self.registry.get(conn.match_id)
+        lease = conn.align_lease
+        sides = status.active_sides + status.waiting_sides
+        if (
+            store is None
+            or not store.has_connection(conn)
+            or status.connection_id != conn.connection_id
+            or status.account_id != conn.account_id
+            or status.match_id != conn.match_id
+            or status.authority_epoch != st.align_epoch
+            or (lease.status is not None and status.seq <= lease.status.seq)
+            or sorted(sides) != ["A", "B"]
+        ):
+            return
+        # Expiry wins over a late renewal, even between watchdog ticks.
+        if st.lease_mode:
+            await self._reconcile_align_lease(conn.account_id, conn.match_id, st)
+            if status.authority_epoch != st.align_epoch:
+                return
+        now = _align_now_ms()
+        previous = lease.status
+        fresh = (
+            previous is not None
+            and now - lease.received_ms <= _ALIGN_AUTHORITY_TIMEOUT_MS
+        )
+        ready = (
+            status.capability
+            and status.media_ready
+            and status.decode_ready
+            and status.state == "running"
+            and bool(status.active_sides)
+        )
+        if previous is not None and status.progress_t_us > previous.progress_t_us:
+            lease.progressed_ms = now
+        if not ready:
+            lease.eligible_since_ms = None
+        elif not fresh or lease.eligible_since_ms is None or lease.blocked:
+            lease.eligible_since_ms = now
+        lease.blocked = False
+        lease.status = status
+        lease.received_ms = now
+        if not st.lease_mode:
+            st.lease_mode = True
+            self._set_align_owner(st, None, "lease_mode_enabled")
+            await self._announce_authority(conn.account_id, conn.match_id, st)
+            if st.align_anchor is not None:
+                await self._broadcast_align_scope(conn.account_id, conn.match_id)
+        if (
+            st.align_owner is conn
+            and ready
+            and st.takeover_deadline_ms is not None
+            and status.progress_t_us >= (st.frame_align_t_us or 0)
+        ):
+            # Only a report acknowledging the new epoch confirms takeover readiness.
+            st.takeover_deadline_ms = None
+        await self._reconcile_align_lease(conn.account_id, conn.match_id, st)
+
+    async def _reconcile_align_lease(
+        self, account_id: str, match_id: str, st: _DirectorState
+    ) -> None:
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        now = _align_now_ms()
+        owner = st.align_owner
+        status = owner.align_lease.status if owner else None
+        reason = "no_candidate"
+        replace = owner is None
+        if owner is not None:
+            if (
+                status is None
+                or now - owner.align_lease.received_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
+            ):
+                reason, replace = "lease_expired", True
+            elif not status.capability or status.state == "relinquish":
+                reason, replace = "publisher_declined", True
+            elif st.takeover_deadline_ms is not None and now > st.takeover_deadline_ms:
+                reason, replace = "takeover_timeout", True
+            elif st.takeover_deadline_ms is None and (
+                status.state != "running"
+                or not status.media_ready
+                or not status.decode_ready
+            ):
+                reason = "paused" if status.state == "paused" else "media_wait"
+                if st.align_anchor is not None:
+                    changed = (
+                        not st.align_anchor.get("frozen")
+                        or st.align_anchor.get("reason") != reason
+                        or st.align_anchor.get("active_sides") != status.active_sides
+                        or st.align_anchor.get("waiting_sides") != status.waiting_sides
+                    )
+                    if changed:
+                        st.align_anchor["stale"] = False
+                        self._freeze_align(st, reason)
+                        st.align_anchor.update(
+                            reason=reason,
+                            active_sides=status.active_sides,
+                            waiting_sides=status.waiting_sides,
+                        )
+                        self.logger.info(
+                            "Frame freeze account=%s match=%s reason=%s",
+                            account_id,
+                            match_id,
+                            reason,
+                        )
+                        await self._broadcast_align_scope(account_id, match_id)
+        if replace:
+            if owner is not None:
+                owner.align_lease.blocked = True
+                owner.align_lease.eligible_since_ms = None
+            candidates = [
+                c
+                for c in store.directors
+                if c.account_id == account_id and self._lease_candidate(c, now)
+            ]
+            selected = (
+                min(
+                    candidates,
+                    key=lambda c: (
+                        not (
+                            c.align_lease.status
+                            and c.align_lease.status.visibility == "visible"
+                            and now - c.align_lease.progressed_ms
+                            <= _ALIGN_AUTHORITY_TIMEOUT_MS
+                        ),
+                        c.director_order,
+                    ),
+                )
+                if candidates
+                else None
+            )
+            if selected is not owner:
+                self._set_align_owner(st, selected, reason)
+                await self._announce_authority(account_id, match_id, st)
+                if st.align_anchor is not None:
+                    await self._broadcast_align_scope(account_id, match_id)
+
     async def _expire_align(self, account_id: str, match_id: str) -> None:
         st = self._director_state.get((account_id, match_id))
         if st is None:
             return
         async with st.align_lock:
+            if st.lease_mode:
+                await self._reconcile_align_lease(account_id, match_id, st)
             if (
                 st.align_authority_last_ms is not None
                 and _now_ms() - st.align_authority_last_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
@@ -1241,6 +1492,7 @@ class ConnectionManager:
                 "now_ms": _now_ms(),
             },
             "config": st.config,
+            "align_lease_required": st.lease_mode,
         }
         # frame_align 独立键、不合并进 state_sync：仅该场收到过才补发权威 T。
         if st.align_anchor is not None:
