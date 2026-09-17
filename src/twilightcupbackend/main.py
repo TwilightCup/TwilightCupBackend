@@ -123,7 +123,6 @@ def create_app(db: DBController | None = None) -> FastAPI:
             align_watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await align_watchdog
-            await connection_manager.close_media_authorities()
             await connection_manager._flush_align_notifications()
         if own_db:
             ctl.close()

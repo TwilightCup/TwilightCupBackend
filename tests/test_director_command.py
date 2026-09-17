@@ -150,7 +150,7 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
                 "payload": {"config": config},
             }
         )
-        assert _recv_until(ws_stage, lambda m: m.get("action") == "config_update") == {
+        assert ws_stage.receive_json() == {
             "type": "director_cmd",
             "action": "config_update",
             "payload": {"config": config},
@@ -163,19 +163,17 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
                 "payload": {"config": "oops"},
             }
         )
-        assert _recv_until(ws_stage, lambda m: m.get("action") == "config_update") == {
+        assert ws_stage.receive_json() == {
             "type": "director_cmd",
             "action": "config_update",
             "payload": {"config": "oops"},
         }
-        # config_update 不回执发送方；服务端媒体锚点则覆盖全部导播。
+        # 选手/裁判/发送方均收不到：以全员聊天作序标，此前不得出现 director_cmd
         ws_pa.send_json({"type": "chat", "text": "marker"})
         for ws in (ws_pa, ws_ref, ws_console):
             for _ in range(10):
                 m = ws.receive_json()
-                assert m.get("action") != "config_update"
-                if ws is not ws_console:
-                    assert m["type"] != "director_cmd"
+                assert m["type"] != "director_cmd"
                 if m.get("type") == "chat" and m.get("text") == "marker":
                     break
             else:
@@ -310,7 +308,8 @@ def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ig
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
     ):
-        _drain(ws_console, 5)
+        owner_auth = ws_console.receive_json()
+        _drain(ws_console, 4)
         _drain(ws_stage, 5)
         _drain(ws_pa, 5)
         # 控制台刷新 frame_align → 舞台扇出原样、发送方不回执
@@ -336,9 +335,9 @@ def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ig
                 "t_us": 1710000000000000,
                 "ready_a": True,
                 "ready_b": False,
-                "src": "docA",
-                "epoch": 1,
-                "authority_epoch": 1,
+                "src": owner_auth["connection_id"],
+                "epoch": owner_auth["authority_epoch"],
+                "authority_epoch": owner_auth["authority_epoch"],
                 "seq": 1,
             }.items()
         )
@@ -359,7 +358,7 @@ def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ig
                 for k, v in original.items()
                 if k not in ("server_now_ms", "server_time_ms")
             }
-            assert p["align_authority_src"] == "docA"
+            assert p["align_authority_src"] == owner_auth["connection_id"]
         # 发送方不回执：以全员聊天作序标，此前不得出现 director_cmd
         ws_pa.send_json({"type": "chat", "text": "after"})
         for _ in range(10):
@@ -378,7 +377,8 @@ def test_frame_align_legacy_updates(world) -> None:  # type: ignore[no-untyped-d
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
     ):
-        _drain(ws_console, 5)
+        owner_auth = ws_console.receive_json()
+        _drain(ws_console, 4)
         _drain(ws_pa, 5)
         # 同一权威 src=docA：每条都被采纳（authority 匹配），最近一条胜出
         ws_console.send_json(
@@ -420,7 +420,7 @@ def test_frame_align_legacy_updates(world) -> None:  # type: ignore[no-untyped-d
                 p["frame_align"].items()
                 >= {"t_us": 456, "ready_a": False, "ready_b": False}.items()
             )
-            assert p["align_authority_src"] == "docA"
+            assert p["align_authority_src"] == owner_auth["connection_id"]
 
 
 def test_frame_align_absent_without_history(world) -> None:  # type: ignore[no-untyped-def]
@@ -445,97 +445,25 @@ def test_frame_align_absent_without_history(world) -> None:  # type: ignore[no-u
         with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage:
             p = _state_sync(ws_stage)
             assert "frame_align" not in p
-            assert "align_authority_src" not in p
+            assert isinstance(p["align_authority_src"], str)
             assert p["config"] == {"rtmpA": "rtmp://a/live"}
-
-
-def test_frame_align_authority_single_adoption(world) -> None:  # type: ignore[no-untyped-def]
-    """唯一权威：首个 src 接任，其后同 src 持续采纳更新；异 src 在任期内被忽略。"""
-    client, _, _, _ = world
-    cm = client.app.state.connection_manager
-    key = ("acc", "m")
-    # 首条 → 接任并采纳
-    relayed, changed = cm._update_director_state(
-        "acc",
-        "m",
-        "frame_align",
-        {"t_us": 100, "ready_a": True, "ready_b": True, "src": "docA"},
-    )
-    assert (relayed, changed) == (True, True)
-    st = cm._director_state[key]
-    assert st.align_authority_src == "docA"
-    assert st.frame_align_t_us == 100
-    # 同 src 继续 → 采纳更新（authority 匹配，无变更）
-    relayed, changed = cm._update_director_state(
-        "acc",
-        "m",
-        "frame_align",
-        {"t_us": 200, "ready_a": False, "ready_b": False, "src": "docA"},
-    )
-    assert (relayed, changed) == (True, False)
-    assert st.frame_align_t_us == 200
-    # 异 src 在任期内 → 忽略：不采纳、不扇出、状态不变
-    relayed, changed = cm._update_director_state(
-        "acc",
-        "m",
-        "frame_align",
-        {"t_us": 999, "ready_a": True, "ready_b": True, "src": "docB"},
-    )
-    assert (relayed, changed) == (False, False)
-    assert st.align_authority_src == "docA"
-    assert st.frame_align_t_us == 200  # 仍为权威 docA 的 200，未被 999 覆盖
-
-
-def test_frame_align_authority_takeover_after_timeout(world) -> None:  # type: ignore[no-untyped-def]
-    """权威静默超时（>5s，断线/倒台）→ 新 src 接任并被采纳。"""
-    client, _, _, _ = world
-    cm = client.app.state.connection_manager
-    key = ("acc", "m")
-    cm._update_director_state("acc", "m", "frame_align", {"t_us": 100, "src": "docA"})
-    st = cm._director_state[key]
-    # 伪造权威最后心跳为 6s 前 → 超时（权威已断线）
-    st.align_authority_last_ms = int(time.time() * 1000) - 6000
-    relayed, changed = cm._update_director_state(
-        "acc", "m", "frame_align", {"t_us": 777, "src": "docB"}
-    )
-    assert (relayed, changed) == (True, True)
-    assert st.align_authority_src == "docB"
-    assert st.frame_align_t_us == 777  # 新权威 T 已采纳
-    # 旧权威 docA 再发言也已超期前的权威被 B 取代 → 此时其为非权威，被忽略
-    relayed, _ = cm._update_director_state(
-        "acc", "m", "frame_align", {"t_us": 888, "src": "docA"}
-    )
-    assert relayed is False
-    assert st.frame_align_t_us == 777
-
-
-def test_frame_align_without_src_ignored(world) -> None:  # type: ignore[no-untyped-def]
-    """frame_align 缺 src → 无权威归属，一律忽略（不存储、不扇出）。"""
-    client, _, _, _ = world
-    cm = client.app.state.connection_manager
-    relayed, changed = cm._update_director_state(
-        "acc", "m", "frame_align", {"t_us": 1, "ready_a": True, "ready_b": True}
-    )
-    st = cm._director_state[("acc", "m")]
-    assert (relayed, changed) == (False, False)
-    assert st.align_authority_src is None
-    assert st.frame_align_t_us is None
 
 
 def test_frame_align_non_authority_not_relayed(world) -> None:  # type: ignore[no-untyped-def]
     """多舞台并存：非权威的 frame_align 不扇出给其他连接（观众不见第二套 T）。"""
     client, _, _, tokens = world
     with (
+        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage_a,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage_b,
-        client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage_a,
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
     ):
         _drain(ws_console, 5)
         _drain(ws_stage_b, 5)
-        _drain(ws_stage_a, 5)
+        owner_auth = ws_stage_a.receive_json()
+        _drain(ws_stage_a, 4)
         _drain(ws_pa, 5)
-        # A 先发言 → 成为权威，扇出给 console
+        # A 最先连接 → 已是主 T，扇出给 console
         ws_stage_a.send_json(
             {
                 "type": "director_command",
@@ -549,7 +477,10 @@ def test_frame_align_non_authority_not_relayed(world) -> None:  # type: ignore[n
             }
         )
         r = _recv_until(ws_console, lambda m: m.get("action") == "frame_align")
-        assert r["payload"]["src"] == "docA" and r["payload"]["t_us"] == 1000
+        assert (
+            r["payload"]["src"] == owner_auth["connection_id"]
+            and r["payload"]["t_us"] == 1000
+        )
         # B 发言（生产期内，非权威）→ 不扇出；A 仍权威继续采纳
         ws_stage_b.send_json(
             {
@@ -591,5 +522,5 @@ def test_frame_align_non_authority_not_relayed(world) -> None:  # type: ignore[n
         # 新连接视角：权威仍为 docA、T=2000（B 的 99 从未被采纳/存储）
         with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage_c:
             p = _state_sync(ws_stage_c)
-            assert p["align_authority_src"] == "docA"
+            assert p["align_authority_src"] == owner_auth["connection_id"]
             assert p["frame_align"]["t_us"] == 2000

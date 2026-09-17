@@ -8,7 +8,8 @@ M4 仅含连接与基础状态；M6/M7 会补充回合、计时器、累计比�
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from uuid import uuid4
 
 from fastapi import WebSocket
 
@@ -29,8 +30,10 @@ class Connection:
     match_id: str
     # 客户端能力声明（?cap= 逗号分隔；如 preload1 = 会上报预载状态）
     capabilities: frozenset[str] = frozenset()
-    # A superseded frame publisher cannot re-elect itself under a different src.
-    frame_align_retired: bool = False
+    connection_id: str = field(default_factory=lambda: uuid4().hex)
+    director_order: int = 0
+    auth_sent: bool = False
+    authority_epoch_seen: int = 0
 
     @property
     def read_only(self) -> bool:

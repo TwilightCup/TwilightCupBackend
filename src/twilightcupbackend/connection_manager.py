@@ -33,7 +33,6 @@ from .datatypes import (
     Seat,
     now_ts,
 )
-from .media_authority import MediaAuthority
 from .protocol import (
     ClientAttemptSkip,
     ClientChat,
@@ -139,8 +138,7 @@ def _now_ms() -> int:
     return int(now_ts().timestamp() * 1000)
 
 
-# 帧级对齐权威静默阈值（毫秒）：当前权威超时未继续上报 frame_align（断线/倒台）
-# 时，允许其他 src 接任权威。建议 5s，见 frame_align 权威选举。
+# 帧级对齐静默阈值（毫秒）：超时只冻结；主连接离开才按连接顺序选下一位。
 _ALIGN_AUTHORITY_TIMEOUT_MS = 5_000
 
 
@@ -162,18 +160,17 @@ class _DirectorState:
     # 否则不对外补发）。t_us 为 epoch 微秒，0 也是合法值（前端按未就绪兜底）；
     # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。该 key 的权威 src 由
     # align_authority_src 持有（多舞台并存时唯一权威、其余忽略）；last_ms 为
-    # 最近一次被采纳（该权威）frame_align 的服务器毫秒，用于超时接管判定。
+    # 最近一次被采纳（该权威）frame_align 的服务器毫秒，用于超时冻结判定。
     frame_align_t_us: int | None = None
     frame_align_ready_a: bool = False
     frame_align_ready_b: bool = False
     align_authority_src: str | None = None
     align_authority_last_ms: int | None = None
-    align_managed: bool = False
     align_owner: Connection | None = None
     align_epoch: int = 0
     align_seq: int = 0
     align_client_seq: int | None = None
-    align_retired_sources: set[str] = field(default_factory=set)
+    has_history: bool = False
     align_anchor: dict[str, Any] | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -193,7 +190,10 @@ class ConnectionManager:
         # 后台任务（断连提示等）：保留引用避免被 GC，完成后自动丢弃。
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._align_notifications: set[asyncio.Task[None]] = set()
-        self._media_authorities: dict[tuple[str, str], MediaAuthority] = {}
+        self._director_order = 0
+        # Wall-clock seed reduces cross-boot collisions; it is not durable fencing.
+        # Clients also get a fresh connection_id and must reset on reconnect.
+        self._authority_epoch = time.time_ns() // 1000
         # M5 注入：处理 ``!`` 命令
         self.command_router: CommandRouter | None = None
         # M6 注入：比赛状态机
@@ -285,7 +285,7 @@ class ConnectionManager:
         # 同座位重连：导播允许多连接并存（网页+OBS 等）；选手/裁判替换旧连接
         legacy: Connection | None = None
         if seat == Seat.DIRECTOR:
-            store.directors.add(conn)
+            self._add_director(store, conn)
         else:
             previous = store.connections.get(seat)
             store.connections[seat] = conn
@@ -298,9 +298,19 @@ class ConnectionManager:
         if legacy is not None:
             await self._safe_close(legacy.websocket)
 
+        st = self._director_state.get((conn.account_id, conn.match_id))
+        auth_epoch = st.align_epoch if st is not None else 0
         await self._send(
             conn,
             SrvAuthOk(
+                connection_id=conn.connection_id if seat == Seat.DIRECTOR else None,
+                align_role=(
+                    "publisher" if st and st.align_owner is conn else "follower"
+                )
+                if seat == Seat.DIRECTOR
+                else None,
+                align_authority_src=st.align_authority_src if st else None,
+                authority_epoch=auth_epoch if seat == Seat.DIRECTOR else None,
                 account_id=account.id,
                 display_name=account.display_name,
                 seat=seat.name,
@@ -310,6 +320,8 @@ class ConnectionManager:
                 player_b_name=self._display_name_of(match.player_b_id),
             ),
         )
+        conn.auth_sent = True
+        conn.authority_epoch_seen = auth_epoch
         await self._send(
             conn, SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready)
         )
@@ -413,22 +425,22 @@ class ConnectionManager:
         # 直播配置，舞台晚于控制台打开也能对齐，无需控制台再点一次。
         # 仅 DIRECTOR 席、有暂存才发；选手/裁判永不收到。
         if seat == Seat.DIRECTOR:
-            try:
-                await self._restore_media_config(conn.account_id, store.id)
-            except Exception:
-                self.logger.warning("Media config restore unavailable.")
-                await self._send(
-                    conn, SrvError(code=503, msg="Media config unavailable")
-                )
             await self._expire_align(conn.account_id, store.id)
             st = self._director_state.get((conn.account_id, store.id))
             if st is not None:
                 async with st.align_lock:
                     replay = self._director_state_payload(conn.account_id, store.id)
-                    await self._send(
-                        conn,
-                        SrvDirectorCommand(action="state_sync", payload=replay or {}),
-                    )
+                    if conn.authority_epoch_seen != st.align_epoch:
+                        await self._send_authority(conn, st)
+                    if replay is not None:
+                        replay["align_role"] = (
+                            "publisher" if st.align_owner is conn else "follower"
+                        )
+                        replay["connection_id"] = conn.connection_id
+                        await self._send(
+                            conn,
+                            SrvDirectorCommand(action="state_sync", payload=replay),
+                        )
             # 补发当前选图预览（若已宣布）：导播 categoryinfo 场景晚开也能立即
             # 对齐当前项目。pick_announced 自 select_pick 起留存到下一次
             # begin_prep 才清空，覆盖 PREP/倒计时/回合中各阶段（选手席的
@@ -471,25 +483,112 @@ class ConnectionManager:
             "Seat %s disconnected from match %s.", conn.seat.name, conn.match_id
         )
 
+    def _next_authority_epoch(self) -> int:
+        self._authority_epoch += 1
+        return self._authority_epoch
+
+    def _add_director(self, store: MatchStore, conn: Connection) -> None:
+        # Registration/election has no await: first registered is the publisher.
+        self._director_order += 1
+        conn.director_order = self._director_order
+        store.directors.add(conn)
+        st = self._director_state.setdefault(
+            (conn.account_id, store.id), _DirectorState()
+        )
+        if st.align_owner is None:
+            self._select_oldest(store, conn.account_id, st)
+
+    def _select_oldest(
+        self, store: MatchStore, account_id: str, st: _DirectorState
+    ) -> None:
+        candidates = [c for c in store.directors if c.account_id == account_id]
+        owner = min(candidates, key=lambda c: c.director_order) if candidates else None
+        st.align_owner = owner
+        st.align_authority_src = owner.connection_id if owner else None
+        st.align_epoch = self._next_authority_epoch()
+        st.align_seq = 0
+        st.align_client_seq = None
+        st.align_authority_last_ms = None
+        if st.align_anchor is not None:
+            now = _now_ms()
+            st.align_anchor = {
+                **st.align_anchor,
+                "src": st.align_authority_src,
+                "source_id": st.align_authority_src,
+                "epoch": st.align_epoch,
+                "authority_epoch": st.align_epoch,
+                "seq": 0,
+                "frozen": True,
+                "stale": True,
+                "ready_a": False,
+                "ready_b": False,
+                "effective_at_ms": now,
+                "server_time_ms": now,
+                "server_now_ms": now,
+                "reason": "waiting_publisher" if owner else "no_publisher",
+            }
+
+    async def _send_authority(self, conn: Connection, st: _DirectorState) -> None:
+        epoch = st.align_epoch
+        await self._send(
+            conn,
+            SrvDirectorCommand(
+                action="align_authority",
+                payload={
+                    "src": st.align_authority_src,
+                    "epoch": epoch,
+                    "authority_epoch": epoch,
+                    "connection_id": conn.connection_id,
+                    "role": "publisher" if st.align_owner is conn else "follower",
+                    "account_id": conn.account_id,
+                    "match_id": conn.match_id,
+                },
+            ),
+        )
+        conn.authority_epoch_seen = epoch
+
+    async def _announce_authority(
+        self, account_id: str, match_id: str, st: _DirectorState
+    ) -> None:
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        epoch = st.align_epoch
+        for conn in list(store.directors):
+            if st.align_epoch != epoch:
+                return
+            if (
+                conn.account_id == account_id
+                and conn.auth_sent
+                and conn.authority_epoch_seen != epoch
+            ):
+                try:
+                    await self._send_authority(conn, st)
+                except Exception:
+                    self._remove_connection(store, conn)
+
+    async def _notify_election(
+        self, account_id: str, match_id: str, epoch: int
+    ) -> None:
+        st = self._director_state[(account_id, match_id)]
+        async with st.align_lock:
+            if st.align_epoch != epoch:
+                return
+            await self._announce_authority(account_id, match_id, st)
+            if st.align_epoch == epoch and st.align_anchor is not None:
+                await self._broadcast_align_scope(account_id, match_id)
+
     def _remove_connection(self, store: MatchStore, conn: Connection) -> None:
         """从比赛移除一条连接：导播从集合 discard，其余按座位删除。"""
         if conn.seat == Seat.DIRECTOR:
             store.directors.discard(conn)
             st = self._director_state.get((conn.account_id, conn.match_id))
-            if (
-                st is not None
-                and st.align_managed
-                and not any(c.account_id == conn.account_id for c in store.directors)
-            ):
-                session = self._media_authorities.get((conn.account_id, conn.match_id))
-                if session is not None:
-                    session.cancel()
-                self._freeze_managed(st, "no_viewers")
             if st is not None and st.align_owner is conn:
-                self._freeze_align(st)
-                st.align_owner = None
+                self._select_oldest(store, conn.account_id, st)
                 task = asyncio.create_task(
-                    self._notify_frozen(conn.account_id, conn.match_id, st.align_seq)
+                    self._notify_election(
+                        conn.account_id, conn.match_id, st.align_epoch
+                    )
                 )
                 self._align_notifications.add(task)
                 task.add_done_callback(self._align_notifications.discard)
@@ -636,42 +735,20 @@ class ConnectionManager:
                         (conn.account_id, conn.match_id), _DirectorState()
                     )
                     async with st.align_lock:
+                        if act == "frame_align":
+                            await self._announce_authority(
+                                conn.account_id, conn.match_id, st
+                            )
                         should_relay, authority_changed = self._update_director_state(
                             conn.account_id, conn.match_id, act, pl, conn
                         )
                         if not should_relay:
                             return
-                        if act == "config_update" and any(
-                            k in st.config for k in ("hlsA", "hlsB")
-                        ):
-                            try:
-                                await self._ensure_media_authority(
-                                    conn.account_id, conn.match_id, st
-                                )
-                            except Exception:
-                                self.logger.warning(
-                                    "Media authority storage unavailable."
-                                )
-                                await self._send(
-                                    conn,
-                                    SrvError(
-                                        code=503,
-                                        msg="Media authority storage unavailable",
-                                    ),
-                                )
                         # Source selection must arrive BEFORE its first anchor:
                         # ExternalClock rejects anchors from a non-selected source.
                         if authority_changed:
-                            await self.broadcast_to_other_directors(
-                                conn,
-                                SrvDirectorCommand(
-                                    action="align_authority",
-                                    payload={
-                                        "src": st.align_authority_src,
-                                        "epoch": st.align_epoch,
-                                        "authority_epoch": st.align_epoch,
-                                    },
-                                ),
+                            await self._announce_authority(
+                                conn.account_id, conn.match_id, st
                             )
                         outgoing = (
                             dict(st.align_anchor or {}) if act == "frame_align" else pl
@@ -935,11 +1012,12 @@ class ConnectionManager:
         覆盖合并（八键可部分缺失）。这些操控值保留原有宽松广播口径；
         frame_align 则严格校验后生成完整服务端锚点。
         非 frame_align 恒 (True, False)（保留原转发语义）；frame_align 按唯一
-        权威选举：仅当前权威（或超时/缺席后接任的新 src）被采纳返回 (True, ...)，
+        连接选举：仅当前主连接被采纳返回 (True, ...)，
         非权威一律 (False, False)（不存储、不扇出）。
         """
         st = self._director_state.setdefault((account_id, match_id), _DirectorState())
         now = _now_ms()
+        st.has_history = True
         match action:
             case "switch_scene":
                 st.scene = payload.get("scene")
@@ -978,14 +1056,14 @@ class ConnectionManager:
         conn: Connection | None,
         now: int,
     ) -> tuple[bool, bool]:
-        """Validate before election; only the server assigns output epoch/sequence.
+        """Validate elected publisher; only the server assigns output epoch/sequence.
 
         Input seq is the publisher's independent sequence, not the server sequence
         (which also counts freeze transitions). Legacy publishers may omit it.
         """
-        if st.align_managed:
+        if conn is None or st.align_owner is not conn:
             return False, False
-        src = payload.get("src", payload.get("source_id"))
+        src = conn.connection_id
         t = payload.get("t_us")
         rate = payload.get("rate", 1.0)
         if (
@@ -1024,45 +1102,26 @@ class ConnectionManager:
             conn.account_id != account_id
             or conn.match_id != match_id
             or conn.seat != Seat.DIRECTOR
-            or conn.frame_align_retired
         ):
             return False, False
         if conn is not None:
             store = self.registry.get(match_id)
             if store is None or not store.has_connection(conn):
                 return False, False
-        same = src == st.align_authority_src and conn is st.align_owner
-        expired = (
-            st.align_authority_last_ms is not None
-            and now - st.align_authority_last_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
-        )
-        if src in st.align_retired_sources:
-            return False, False
-        if st.align_authority_src is not None and not same and not expired:
-            return False, False
-        # A disconnected owner's identity cannot be spoofed by another live socket.
-        if st.align_authority_src == src and st.align_owner is not None and not same:
-            return False, False
-        if (
-            same
-            and st.align_client_seq is not None
-            and (seq is None or seq <= st.align_client_seq)
+        if st.align_client_seq is not None and (
+            seq is None or seq <= st.align_client_seq
         ):
             return False, False
         if st.frame_align_t_us is not None and t < st.frame_align_t_us:
             return False, False
-        changed = not same or expired
+        changed = False
         if st.align_anchor is not None and (
             scene != st.align_anchor["scene"]
             or source_id != st.align_anchor["source_id"]
         ):
             changed = True  # ExternalClock fences scene/source scope by epoch too.
         if changed:
-            if st.align_owner is not None and st.align_owner is not conn:
-                st.align_owner.frame_align_retired = True
-            if st.align_authority_src is not None and src != st.align_authority_src:
-                st.align_retired_sources.add(st.align_authority_src)
-            st.align_epoch += 1
+            st.align_epoch = self._next_authority_epoch()
             st.align_seq = 0
             st.align_client_seq = None
         st.align_authority_src = src
@@ -1107,14 +1166,9 @@ class ConnectionManager:
         if a is None or a.get("stale"):
             return False
         now = _now_ms()
-        # Match 627c34a's one-second bounded extrapolation; do not invent five
-        # seconds of video coverage while a publisher is missing.
-        elapsed = max(0, min(now - a["effective_at_ms"], 1000))
-        t = a["t_us"]
-        if not a["paused"] and not a["frozen"]:
-            t += int(elapsed * 1000 * a["rate"])
+        # The backend never advances T: freeze exactly the last publisher value.
         st.align_seq += 1
-        st.frame_align_t_us = min(t, 2**53 - 1)
+        st.frame_align_t_us = a["t_us"]
         st.frame_align_ready_a = st.frame_align_ready_b = False
         st.align_anchor = {
             **a,
@@ -1137,27 +1191,20 @@ class ConnectionManager:
             return
         msg = SrvDirectorCommand(action="frame_align", payload=self._align_snapshot(st))
         for conn in list(store.directors):
-            if conn.account_id == account_id:
+            if conn.account_id == account_id and conn.auth_sent:
                 try:
                     await self._send(conn, msg)
                 except Exception:
                     self._remove_connection(store, conn)
                     self.logger.debug("Frame anchor send failed.", exc_info=True)
 
-    async def _notify_frozen(self, account_id: str, match_id: str, seq: int) -> None:
-        st = self._director_state[(account_id, match_id)]
-        async with st.align_lock:
-            # A new publication may have superseded this disconnect notification.
-            if st.align_seq == seq and st.align_anchor and st.align_anchor["stale"]:
-                await self._broadcast_align_scope(account_id, match_id)
-
     async def _flush_align_notifications(self) -> None:
-        if self._align_notifications:
+        while self._align_notifications:
             await asyncio.gather(*self._align_notifications)
 
     async def _expire_align(self, account_id: str, match_id: str) -> None:
         st = self._director_state.get((account_id, match_id))
-        if st is None or st.align_managed:
+        if st is None:
             return
         async with st.align_lock:
             if (
@@ -1172,261 +1219,7 @@ class ConnectionManager:
         while True:
             await asyncio.sleep(0.25)
             for account_id, match_id in list(self._director_state):
-                st = self._director_state[(account_id, match_id)]
-                if st.align_managed:
-                    async with st.align_lock:
-                        try:
-                            await self._ensure_media_authority(account_id, match_id, st)
-                        except Exception:
-                            self.logger.warning(
-                                "Media authority reconciliation failed."
-                            )
-                else:
-                    await self._expire_align(account_id, match_id)
-
-    def _media_record_key(self, account_id: str, match_id: str) -> str:
-        # IDs are generated hex strings; keep a structured scope in the record too.
-        return f"{account_id}:{match_id}"
-
-    async def _restore_media_config(self, account_id: str, match_id: str) -> None:
-        record = await asyncio.to_thread(
-            self.db.database.director_authorities.find_one,
-            {"_id": self._media_record_key(account_id, match_id)},
-        )
-        if record is None:
-            return
-        st = self._director_state.setdefault((account_id, match_id), _DirectorState())
-        async with st.align_lock:
-            # Live memory wins over a snapshot read while config_update awaits IO.
-            if not st.align_managed:
-                st.config.update(record.get("config", {}))
-            await self._ensure_media_authority(account_id, match_id, st)
-
-    async def _ensure_media_authority(
-        self, account_id: str, match_id: str, st: _DirectorState
-    ) -> None:
-        """Called with the scope lock held. Configured scopes never elect pages."""
-        st.align_managed = True
-        key = (account_id, match_id)
-        store = self.registry.get(match_id)
-        active = (
-            store is not None
-            and store.match.status != MatchStatus.ENDED
-            and any(c.account_id == account_id for c in store.directors)
-        )
-        urls = tuple(st.config.get(k, "") for k in ("hlsA", "hlsB"))
-        if any(not isinstance(u, str) for u in urls):
-            urls = ("", "")
-        session = self._media_authorities.get(key)
-        if (
-            session is not None
-            and active
-            and session.urls == urls
-            and not session.closed
-            and session.task is not None
-            and not session.task.done()
-        ):
-            return
-        if session is not None:
-            await session.close()
-            self._media_authorities.pop(key, None)
-            self._freeze_managed(st, "stopped")
-            await self._broadcast_align_scope(account_id, match_id)
-        if not active:
-            return
-        record_key = {"_id": self._media_record_key(account_id, match_id)}
-        collection = self.db.database.director_authorities
-        # Save config for next auth/restart; the scope is authenticated.
-        await asyncio.to_thread(
-            collection.update_one,
-            record_key,
-            {
-                "$set": {
-                    "config": {"hlsA": urls[0], "hlsB": urls[1]},
-                    "account_id": account_id,
-                    "match_id": match_id,
-                },
-                "$max": {"epoch": max(st.align_epoch, _now_ms())},
-            },
-            upsert=True,
-        )
-        if len(self._media_authorities) >= self.settings.authority_max_scopes:
-            self._freeze_managed(st, "capacity_limit")
-            return
-        from pymongo import ReturnDocument
-
-        record = await asyncio.to_thread(
-            collection.find_one_and_update,
-            record_key,
-            {"$inc": {"epoch": 1}},
-            return_document=ReturnDocument.AFTER,
-        )
-        assert record is not None
-        epoch = record["epoch"]
-        if epoch >= 2**53:
-            raise ValueError("Authority epoch exhausted")
-        floor = max(record.get("t_us", 0), st.frame_align_t_us or 0)
-        session = MediaAuthority(
-            key, urls, epoch, floor, self.settings, self._publish_media
-        )
-        st.align_owner = None
-        st.align_epoch, st.align_seq = epoch, 0
-        st.align_authority_src = session.src
-        st.frame_align_t_us = floor
-        now = _now_ms()
-        # auth/state_sync can run before the newly scheduled pump's first turn.
-        st.align_anchor = {
-            "src": session.src,
-            "source_id": session.src,
-            "scene": "shared-playback",
-            "account_id": account_id,
-            "match_id": match_id,
-            "epoch": epoch,
-            "authority_epoch": epoch,
-            "seq": 0,
-            "t_us": floor,
-            "rate": 0.0,
-            "paused": False,
-            "frozen": True,
-            "stale": True,
-            "state": "waiting" if floor == 0 else "frozen",
-            "reason": "waiting_media",
-            "ready_a": False,
-            "ready_b": False,
-            "effective_at_ms": now,
-            "server_now_ms": now,
-            "server_time_ms": now,
-        }
-        self._media_authorities[key] = session
-        session.start()
-
-    def _freeze_managed(self, st: _DirectorState, reason: str) -> None:
-        if st.align_anchor is None:
-            return
-        now = _now_ms()
-        st.align_seq += 1
-        st.align_anchor = {
-            **st.align_anchor,
-            "seq": st.align_seq,
-            "rate": 0.0,
-            "frozen": True,
-            "stale": True,
-            "state": "frozen",
-            "reason": reason,
-            "ready_a": False,
-            "ready_b": False,
-            "effective_at_ms": now,
-            "server_now_ms": now,
-            "server_time_ms": now,
-        }
-
-    async def _publish_media(self, session: MediaAuthority) -> None:
-        account_id, match_id = session.key
-        st = self._director_state[session.key]
-        async with st.align_lock:
-            if (
-                self._media_authorities.get(session.key) is not session
-                or session.closed
-            ):
-                return
-            store = self.registry.get(match_id)
-            if store is None or store.match.status == MatchStatus.ENDED:
-                self._freeze_managed(st, "match_ended")
-                await self._broadcast_align_scope(account_id, match_id)
-                return
-            t, frozen, reason = session.clock.tick(*session.coverage, time.monotonic())
-            paused = store.match.status == MatchStatus.PAUSED
-            if paused:
-                session.clock.t_us = st.frame_align_t_us or 0
-                session.clock.frozen = True
-                t, frozen, reason = session.clock.t_us, True, "match_paused"
-            effective = _now_ms()
-            if not all(session.urls):
-                reason = "missing_hls_config"
-            elif frozen and not paused:
-                reason = next(
-                    (o.reason for o in session.observers if o.reason != "observing"),
-                    reason,
-                )
-            try:
-                # Persist the emitted floor before publishing: a process restart may
-                # have a lower wall clock or encounter an older/restarted media stream.
-                await asyncio.to_thread(
-                    self.db.database.director_authorities.update_one,
-                    {"_id": self._media_record_key(account_id, match_id)},
-                    {"$max": {"t_us": t}},
-                )
-            except Exception:
-                t, frozen, reason = (
-                    st.frame_align_t_us or 0,
-                    True,
-                    "storage_unavailable",
-                )
-            first = st.align_seq == 0
-            st.align_seq += 1
-            now = _now_ms()
-            st.frame_align_t_us = t
-            st.align_anchor = {
-                "src": session.src,
-                "source_id": session.src,
-                "scene": "shared-playback",
-                "account_id": account_id,
-                "match_id": match_id,
-                "epoch": session.epoch,
-                "authority_epoch": session.epoch,
-                "seq": st.align_seq,
-                "t_us": t,
-                "rate": 0.0 if frozen else 1.0,
-                "paused": paused,
-                "frozen": frozen,
-                "stale": frozen,
-                "state": "waiting" if t == 0 else "frozen" if frozen else "playing",
-                "reason": reason,
-                "effective_at_ms": effective,
-                "server_now_ms": now,
-                "server_time_ms": now,
-                # Metadata is not proof of browser decoding/presentation readiness.
-                "ready_a": False,
-                "ready_b": False,
-                "coverage": [
-                    {
-                        "from_us": c.from_us,
-                        "continuous_to_us": c.to_us,
-                        "latest_us": c.latest_us,
-                    }
-                    for c in session.coverage
-                ],
-            }
-            if first:
-                await self._broadcast_media_message(
-                    account_id,
-                    match_id,
-                    SrvDirectorCommand(
-                        action="align_authority",
-                        payload={
-                            "src": session.src,
-                            "epoch": session.epoch,
-                            "authority_epoch": session.epoch,
-                        },
-                    ),
-                )
-            await self._broadcast_align_scope(account_id, match_id)
-
-    async def _broadcast_media_message(
-        self, account_id: str, match_id: str, msg: ServerMessage
-    ) -> None:
-        store = self.registry.get(match_id)
-        if store is not None:
-            for conn in list(store.directors):
-                if conn.account_id == account_id:
-                    try:
-                        await self._send(conn, msg)
-                    except Exception:
-                        self._remove_connection(store, conn)
-
-    async def close_media_authorities(self) -> None:
-        await asyncio.gather(*(s.close() for s in self._media_authorities.values()))
-        self._media_authorities.clear()
+                await self._expire_align(account_id, match_id)
 
     def _director_state_payload(
         self, account_id: str, match_id: str
@@ -1437,7 +1230,7 @@ class ConnectionManager:
         时钟偏移校正（elapsed = now_ms - started_at，已扣暂停）。
         """
         st = self._director_state.get((account_id, match_id))
-        if st is None:
+        if st is None or (not st.has_history and st.align_anchor is None):
             return None
         out: dict[str, Any] = {
             "scene": st.scene,

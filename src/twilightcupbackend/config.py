@@ -38,23 +38,10 @@ class Settings:
     locales_dir: str  # 语言文件目录（文件名=语言 id，见 docs/locales.md）
     default_locale: str  # 默认语言 id（比赛未切换时使用）
 
-    authority_hls_origins: tuple[str, ...] = ("https://bsrserver.org.cn:1936",)
-    authority_hls_bearer: str = ""
-    authority_max_scopes: int = 8
-
     @classmethod
     def load(cls) -> Settings:
         dotenv.load_dotenv()
         return cls(
-            authority_hls_origins=tuple(
-                u.strip()
-                for u in os.getenv(
-                    "AUTHORITY_HLS_ORIGINS", "https://bsrserver.org.cn:1936"
-                ).split(",")
-                if u.strip()
-            ),
-            authority_hls_bearer=os.getenv("AUTHORITY_HLS_BEARER", ""),
-            authority_max_scopes=int(os.getenv("AUTHORITY_MAX_SCOPES", "8")),
             mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
             db_name=os.getenv("DB_NAME", "twilightcup"),
             host=os.getenv("HOST", "0.0.0.0"),
