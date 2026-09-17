@@ -150,7 +150,7 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
                 "payload": {"config": config},
             }
         )
-        assert ws_stage.receive_json() == {
+        assert _recv_until(ws_stage, lambda m: m.get("action") == "config_update") == {
             "type": "director_cmd",
             "action": "config_update",
             "payload": {"config": config},
@@ -163,17 +163,19 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
                 "payload": {"config": "oops"},
             }
         )
-        assert ws_stage.receive_json() == {
+        assert _recv_until(ws_stage, lambda m: m.get("action") == "config_update") == {
             "type": "director_cmd",
             "action": "config_update",
             "payload": {"config": "oops"},
         }
-        # 选手/裁判/发送方均收不到：以全员聊天作序标，此前不得出现 director_cmd
+        # config_update 不回执发送方；服务端媒体锚点则覆盖全部导播。
         ws_pa.send_json({"type": "chat", "text": "marker"})
         for ws in (ws_pa, ws_ref, ws_console):
             for _ in range(10):
                 m = ws.receive_json()
-                assert m["type"] != "director_cmd"
+                assert m.get("action") != "config_update"
+                if ws is not ws_console:
+                    assert m["type"] != "director_cmd"
                 if m.get("type") == "chat" and m.get("text") == "marker":
                     break
             else:

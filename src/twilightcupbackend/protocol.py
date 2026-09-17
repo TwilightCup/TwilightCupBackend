@@ -262,13 +262,15 @@ class ClientDirectorCommand(BaseModel):
     soon_set_target: {"target_ms": 300000}（改目标毫秒数）；
     config_update: {"config": {...}}（直播配置实时下发：rtmpA/rtmpB/hlsA/
     hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
-    服务端不校验、原样透传，与其余 action 的宽松口径一致）。
-    frame_align: {"t_us", "src" (或 "source_id"), "ready_a"?, "ready_b"?,
+    原样透传；hlsA/B 另持久化并启动受 URL/网络限制的双路服务端观测）。
+    frame_align（仅从未配置 HLS 的旧客户端兼容入口）:
+    {"t_us", "src" (或 "source_id"), "ready_a"?, "ready_b"?,
     "seq"?, "epoch"/"authority_epoch"?, "rate"?, "paused"?, "frozen"?}。
     t_us 是非负 JS safe integer 微秒；rate 为 0..1.08；状态必须是 bool。
     可选 account_id/match_id 必须匹配认证连接。服务端按账号+比赛选举并绑定
     publisher WebSocket，5 秒静默后可接任；非 source、旧 epoch/seq、回退 T
     均忽略。输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
+    已配置 HLS 的 scope 拒绝所有页面 frame_align，由服务端生产并推进 T。
     完整字段、生命周期及 627c34a 兼容边界见 docs/frame-align-authority.md。
     """
 
@@ -632,6 +634,8 @@ class SrvDirectorCommand(BaseModel):
 
     除 frame_align 补全服务端锚点外，action/payload 原样转发；仅发 sender 之外的
     同账号导播连接（每个导播只控自己的舞台），选手/裁判不收，发送方不回执。
+    HLS 服务端时钟例外：align_authority/frame_align 覆盖同账号同比赛全部
+    DIRECTOR 连接，不再有页面 publisher 或 sender 排除项。
     另有服务端主动下发的 action="state_sync"：DIRECTOR 连接 auth_ok 后若
     该 (account_id, match_id) 有状态暂存，补发 payload={"scene": ...,
     "soon": {"target_ms"/"started_at"/"paused_at"/"now_ms"（服务器毫秒）},

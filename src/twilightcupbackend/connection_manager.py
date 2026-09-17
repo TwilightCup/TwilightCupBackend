@@ -9,6 +9,7 @@ M4 实现：连接/鉴权、聊天中转、系统消息广播、导播只读；�
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from logging import Logger, getLogger
@@ -32,6 +33,7 @@ from .datatypes import (
     Seat,
     now_ts,
 )
+from .media_authority import MediaAuthority
 from .protocol import (
     ClientAttemptSkip,
     ClientChat,
@@ -166,6 +168,7 @@ class _DirectorState:
     frame_align_ready_b: bool = False
     align_authority_src: str | None = None
     align_authority_last_ms: int | None = None
+    align_managed: bool = False
     align_owner: Connection | None = None
     align_epoch: int = 0
     align_seq: int = 0
@@ -190,6 +193,7 @@ class ConnectionManager:
         # 后台任务（断连提示等）：保留引用避免被 GC，完成后自动丢弃。
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._align_notifications: set[asyncio.Task[None]] = set()
+        self._media_authorities: dict[tuple[str, str], MediaAuthority] = {}
         # M5 注入：处理 ``!`` 命令
         self.command_router: CommandRouter | None = None
         # M6 注入：比赛状态机
@@ -409,6 +413,13 @@ class ConnectionManager:
         # 直播配置，舞台晚于控制台打开也能对齐，无需控制台再点一次。
         # 仅 DIRECTOR 席、有暂存才发；选手/裁判永不收到。
         if seat == Seat.DIRECTOR:
+            try:
+                await self._restore_media_config(conn.account_id, store.id)
+            except Exception:
+                self.logger.warning("Media config restore unavailable.")
+                await self._send(
+                    conn, SrvError(code=503, msg="Media config unavailable")
+                )
             await self._expire_align(conn.account_id, store.id)
             st = self._director_state.get((conn.account_id, store.id))
             if st is not None:
@@ -465,6 +476,15 @@ class ConnectionManager:
         if conn.seat == Seat.DIRECTOR:
             store.directors.discard(conn)
             st = self._director_state.get((conn.account_id, conn.match_id))
+            if (
+                st is not None
+                and st.align_managed
+                and not any(c.account_id == conn.account_id for c in store.directors)
+            ):
+                session = self._media_authorities.get((conn.account_id, conn.match_id))
+                if session is not None:
+                    session.cancel()
+                self._freeze_managed(st, "no_viewers")
             if st is not None and st.align_owner is conn:
                 self._freeze_align(st)
                 st.align_owner = None
@@ -621,6 +641,24 @@ class ConnectionManager:
                         )
                         if not should_relay:
                             return
+                        if act == "config_update" and any(
+                            k in st.config for k in ("hlsA", "hlsB")
+                        ):
+                            try:
+                                await self._ensure_media_authority(
+                                    conn.account_id, conn.match_id, st
+                                )
+                            except Exception:
+                                self.logger.warning(
+                                    "Media authority storage unavailable."
+                                )
+                                await self._send(
+                                    conn,
+                                    SrvError(
+                                        code=503,
+                                        msg="Media authority storage unavailable",
+                                    ),
+                                )
                         # Source selection must arrive BEFORE its first anchor:
                         # ExternalClock rejects anchors from a non-selected source.
                         if authority_changed:
@@ -945,6 +983,8 @@ class ConnectionManager:
         Input seq is the publisher's independent sequence, not the server sequence
         (which also counts freeze transitions). Legacy publishers may omit it.
         """
+        if st.align_managed:
+            return False, False
         src = payload.get("src", payload.get("source_id"))
         t = payload.get("t_us")
         rate = payload.get("rate", 1.0)
@@ -1117,7 +1157,7 @@ class ConnectionManager:
 
     async def _expire_align(self, account_id: str, match_id: str) -> None:
         st = self._director_state.get((account_id, match_id))
-        if st is None:
+        if st is None or st.align_managed:
             return
         async with st.align_lock:
             if (
@@ -1132,7 +1172,261 @@ class ConnectionManager:
         while True:
             await asyncio.sleep(0.25)
             for account_id, match_id in list(self._director_state):
-                await self._expire_align(account_id, match_id)
+                st = self._director_state[(account_id, match_id)]
+                if st.align_managed:
+                    async with st.align_lock:
+                        try:
+                            await self._ensure_media_authority(account_id, match_id, st)
+                        except Exception:
+                            self.logger.warning(
+                                "Media authority reconciliation failed."
+                            )
+                else:
+                    await self._expire_align(account_id, match_id)
+
+    def _media_record_key(self, account_id: str, match_id: str) -> str:
+        # IDs are generated hex strings; keep a structured scope in the record too.
+        return f"{account_id}:{match_id}"
+
+    async def _restore_media_config(self, account_id: str, match_id: str) -> None:
+        record = await asyncio.to_thread(
+            self.db.database.director_authorities.find_one,
+            {"_id": self._media_record_key(account_id, match_id)},
+        )
+        if record is None:
+            return
+        st = self._director_state.setdefault((account_id, match_id), _DirectorState())
+        async with st.align_lock:
+            # Live memory wins over a snapshot read while config_update awaits IO.
+            if not st.align_managed:
+                st.config.update(record.get("config", {}))
+            await self._ensure_media_authority(account_id, match_id, st)
+
+    async def _ensure_media_authority(
+        self, account_id: str, match_id: str, st: _DirectorState
+    ) -> None:
+        """Called with the scope lock held. Configured scopes never elect pages."""
+        st.align_managed = True
+        key = (account_id, match_id)
+        store = self.registry.get(match_id)
+        active = (
+            store is not None
+            and store.match.status != MatchStatus.ENDED
+            and any(c.account_id == account_id for c in store.directors)
+        )
+        urls = tuple(st.config.get(k, "") for k in ("hlsA", "hlsB"))
+        if any(not isinstance(u, str) for u in urls):
+            urls = ("", "")
+        session = self._media_authorities.get(key)
+        if (
+            session is not None
+            and active
+            and session.urls == urls
+            and not session.closed
+            and session.task is not None
+            and not session.task.done()
+        ):
+            return
+        if session is not None:
+            await session.close()
+            self._media_authorities.pop(key, None)
+            self._freeze_managed(st, "stopped")
+            await self._broadcast_align_scope(account_id, match_id)
+        if not active:
+            return
+        record_key = {"_id": self._media_record_key(account_id, match_id)}
+        collection = self.db.database.director_authorities
+        # Save config for next auth/restart; the scope is authenticated.
+        await asyncio.to_thread(
+            collection.update_one,
+            record_key,
+            {
+                "$set": {
+                    "config": {"hlsA": urls[0], "hlsB": urls[1]},
+                    "account_id": account_id,
+                    "match_id": match_id,
+                },
+                "$max": {"epoch": max(st.align_epoch, _now_ms())},
+            },
+            upsert=True,
+        )
+        if len(self._media_authorities) >= self.settings.authority_max_scopes:
+            self._freeze_managed(st, "capacity_limit")
+            return
+        from pymongo import ReturnDocument
+
+        record = await asyncio.to_thread(
+            collection.find_one_and_update,
+            record_key,
+            {"$inc": {"epoch": 1}},
+            return_document=ReturnDocument.AFTER,
+        )
+        assert record is not None
+        epoch = record["epoch"]
+        if epoch >= 2**53:
+            raise ValueError("Authority epoch exhausted")
+        floor = max(record.get("t_us", 0), st.frame_align_t_us or 0)
+        session = MediaAuthority(
+            key, urls, epoch, floor, self.settings, self._publish_media
+        )
+        st.align_owner = None
+        st.align_epoch, st.align_seq = epoch, 0
+        st.align_authority_src = session.src
+        st.frame_align_t_us = floor
+        now = _now_ms()
+        # auth/state_sync can run before the newly scheduled pump's first turn.
+        st.align_anchor = {
+            "src": session.src,
+            "source_id": session.src,
+            "scene": "shared-playback",
+            "account_id": account_id,
+            "match_id": match_id,
+            "epoch": epoch,
+            "authority_epoch": epoch,
+            "seq": 0,
+            "t_us": floor,
+            "rate": 0.0,
+            "paused": False,
+            "frozen": True,
+            "stale": True,
+            "state": "waiting" if floor == 0 else "frozen",
+            "reason": "waiting_media",
+            "ready_a": False,
+            "ready_b": False,
+            "effective_at_ms": now,
+            "server_now_ms": now,
+            "server_time_ms": now,
+        }
+        self._media_authorities[key] = session
+        session.start()
+
+    def _freeze_managed(self, st: _DirectorState, reason: str) -> None:
+        if st.align_anchor is None:
+            return
+        now = _now_ms()
+        st.align_seq += 1
+        st.align_anchor = {
+            **st.align_anchor,
+            "seq": st.align_seq,
+            "rate": 0.0,
+            "frozen": True,
+            "stale": True,
+            "state": "frozen",
+            "reason": reason,
+            "ready_a": False,
+            "ready_b": False,
+            "effective_at_ms": now,
+            "server_now_ms": now,
+            "server_time_ms": now,
+        }
+
+    async def _publish_media(self, session: MediaAuthority) -> None:
+        account_id, match_id = session.key
+        st = self._director_state[session.key]
+        async with st.align_lock:
+            if (
+                self._media_authorities.get(session.key) is not session
+                or session.closed
+            ):
+                return
+            store = self.registry.get(match_id)
+            if store is None or store.match.status == MatchStatus.ENDED:
+                self._freeze_managed(st, "match_ended")
+                await self._broadcast_align_scope(account_id, match_id)
+                return
+            t, frozen, reason = session.clock.tick(*session.coverage, time.monotonic())
+            paused = store.match.status == MatchStatus.PAUSED
+            if paused:
+                session.clock.t_us = st.frame_align_t_us or 0
+                session.clock.frozen = True
+                t, frozen, reason = session.clock.t_us, True, "match_paused"
+            effective = _now_ms()
+            if not all(session.urls):
+                reason = "missing_hls_config"
+            elif frozen and not paused:
+                reason = next(
+                    (o.reason for o in session.observers if o.reason != "observing"),
+                    reason,
+                )
+            try:
+                # Persist the emitted floor before publishing: a process restart may
+                # have a lower wall clock or encounter an older/restarted media stream.
+                await asyncio.to_thread(
+                    self.db.database.director_authorities.update_one,
+                    {"_id": self._media_record_key(account_id, match_id)},
+                    {"$max": {"t_us": t}},
+                )
+            except Exception:
+                t, frozen, reason = (
+                    st.frame_align_t_us or 0,
+                    True,
+                    "storage_unavailable",
+                )
+            first = st.align_seq == 0
+            st.align_seq += 1
+            now = _now_ms()
+            st.frame_align_t_us = t
+            st.align_anchor = {
+                "src": session.src,
+                "source_id": session.src,
+                "scene": "shared-playback",
+                "account_id": account_id,
+                "match_id": match_id,
+                "epoch": session.epoch,
+                "authority_epoch": session.epoch,
+                "seq": st.align_seq,
+                "t_us": t,
+                "rate": 0.0 if frozen else 1.0,
+                "paused": paused,
+                "frozen": frozen,
+                "stale": frozen,
+                "state": "waiting" if t == 0 else "frozen" if frozen else "playing",
+                "reason": reason,
+                "effective_at_ms": effective,
+                "server_now_ms": now,
+                "server_time_ms": now,
+                # Metadata is not proof of browser decoding/presentation readiness.
+                "ready_a": False,
+                "ready_b": False,
+                "coverage": [
+                    {
+                        "from_us": c.from_us,
+                        "continuous_to_us": c.to_us,
+                        "latest_us": c.latest_us,
+                    }
+                    for c in session.coverage
+                ],
+            }
+            if first:
+                await self._broadcast_media_message(
+                    account_id,
+                    match_id,
+                    SrvDirectorCommand(
+                        action="align_authority",
+                        payload={
+                            "src": session.src,
+                            "epoch": session.epoch,
+                            "authority_epoch": session.epoch,
+                        },
+                    ),
+                )
+            await self._broadcast_align_scope(account_id, match_id)
+
+    async def _broadcast_media_message(
+        self, account_id: str, match_id: str, msg: ServerMessage
+    ) -> None:
+        store = self.registry.get(match_id)
+        if store is not None:
+            for conn in list(store.directors):
+                if conn.account_id == account_id:
+                    try:
+                        await self._send(conn, msg)
+                    except Exception:
+                        self._remove_connection(store, conn)
+
+    async def close_media_authorities(self) -> None:
+        await asyncio.gather(*(s.close() for s in self._media_authorities.values()))
+        self._media_authorities.clear()
 
     def _director_state_payload(
         self, account_id: str, match_id: str
