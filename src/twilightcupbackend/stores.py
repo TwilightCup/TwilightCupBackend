@@ -29,6 +29,8 @@ class Connection:
     match_id: str
     # 客户端能力声明（?cap= 逗号分隔；如 preload1 = 会上报预载状态）
     capabilities: frozenset[str] = frozenset()
+    # A superseded frame publisher cannot re-elect itself under a different src.
+    frame_align_retired: bool = False
 
     @property
     def read_only(self) -> bool:

@@ -263,13 +263,13 @@ class ClientDirectorCommand(BaseModel):
     config_update: {"config": {...}}（直播配置实时下发：rtmpA/rtmpB/hlsA/
     hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
     服务端不校验、原样透传，与其余 action 的宽松口径一致）。
-    frame_align: {"t_us", "ready_a"?, "ready_b"?, "src"}（导播帧级对齐：
-    t_us 为权威虚拟时间（epoch 微秒），ready_a/b 为舞台侧 A/B 是否已可上屏，
-    src 为广播文档的唯一 id。服务端按 (account_id, match_id) 做唯一权威选举：
-    仅当前权威（src === align_authority_src）或权威缺席/静默超时（5s，断线/
-    倒台）后的接任 src 被采纳存储并扇出，非权威一律忽略——多舞台并存时存储
-    不闪、观众看不到第二套 T。权威接任时额外广播 align_authority {src} 通知
-    同场连接该跟谁；state_sync 回放同时带 align_authority_src 供晚连一致跟随）。
+    frame_align: {"t_us", "src" (或 "source_id"), "ready_a"?, "ready_b"?,
+    "seq"?, "epoch"/"authority_epoch"?, "rate"?, "paused"?, "frozen"?}。
+    t_us 是非负 JS safe integer 微秒；rate 为 0..1.08；状态必须是 bool。
+    可选 account_id/match_id 必须匹配认证连接。服务端按账号+比赛选举并绑定
+    publisher WebSocket，5 秒静默后可接任；非 source、旧 epoch/seq、回退 T
+    均忽略。输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
+    完整字段、生命周期及 627c34a 兼容边界见 docs/frame-align-authority.md。
     """
 
     model_config = _cfg
@@ -630,13 +630,14 @@ class SrvDraftState(BaseModel):
 class SrvDirectorCommand(BaseModel):
     """定向转发给同账号其他 DIRECTOR 连接（OBS 舞台）的操控指令。
 
-    action/payload 原样转发自 ClientDirectorCommand；仅发 sender 之外的
+    除 frame_align 补全服务端锚点外，action/payload 原样转发；仅发 sender 之外的
     同账号导播连接（每个导播只控自己的舞台），选手/裁判不收，发送方不回执。
     另有服务端主动下发的 action="state_sync"：DIRECTOR 连接 auth_ok 后若
     该 (account_id, match_id) 有状态暂存，补发 payload={"scene": ...,
     "soon": {"target_ms"/"started_at"/"paused_at"/"now_ms"（服务器毫秒）},
     "config": {...}}，消除舞台晚开收不到状态的问题。若存有 frame_align，
-    payload 另含 "frame_align": {"t_us"/"ready_a"/"ready_b"} 与
+    payload 另含完整 "frame_align" anchor（含 epoch/seq/rate/paused/frozen、
+    effective_at_ms/server_now_ms、账号/比赛/场景/source 与旧 t_us/ready 字段）和
     "align_authority_src": <src>，补发最近一次导播帧级对齐的权威 T 与其唯一
     权威 src（与 scene/soon/config 并列，独立键、不合并）。
     """

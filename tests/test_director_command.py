@@ -326,24 +326,36 @@ def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ig
             }
         )
         r = _recv_until(ws_stage, lambda m: m.get("action") == "frame_align")
-        assert r == {
-            "type": "director_cmd",
-            "action": "frame_align",
-            "payload": {
+        assert r["type"] == "director_cmd"
+        assert r["action"] == "frame_align"
+        assert (
+            r["payload"].items()
+            >= {
                 "t_us": 1710000000000000,
                 "ready_a": True,
                 "ready_b": False,
                 "src": "docA",
-            },
-        }
+                "epoch": 1,
+                "authority_epoch": 1,
+                "seq": 1,
+            }.items()
+        )
         # 新开舞台连接 auth_ok 后，state_sync 补发含 frame_align（独立键）
         # 与 align_authority_src（唯一权威 src）
         with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage2:
             p = _state_sync(ws_stage2)
-            assert p["frame_align"] == {
-                "t_us": 1710000000000000,
-                "ready_a": True,
-                "ready_b": False,
+            replay = p["frame_align"]
+            original = r["payload"]
+            assert replay["server_now_ms"] >= original["server_now_ms"]
+            assert replay["server_time_ms"] == replay["server_now_ms"]
+            assert {
+                k: v
+                for k, v in replay.items()
+                if k not in ("server_now_ms", "server_time_ms")
+            } == {
+                k: v
+                for k, v in original.items()
+                if k not in ("server_now_ms", "server_time_ms")
             }
             assert p["align_authority_src"] == "docA"
         # 发送方不回执：以全员聊天作序标，此前不得出现 director_cmd
@@ -357,8 +369,8 @@ def test_frame_align_relayed_and_replayed_on_connect(world) -> None:  # type: ig
             raise AssertionError("控制台未收到序标聊天")
 
 
-def test_frame_align_last_write_wins(world) -> None:  # type: ignore[no-untyped-def]
-    """frame_align 覆盖暂存最近一条：t_us/ready 全 0/false 时仍补发（前端兜底）。"""
+def test_frame_align_legacy_updates(world) -> None:  # type: ignore[no-untyped-def]
+    """旧格式仍可更新；回退到 0 被忽略，缺省 ready 按 False。"""
     client, _, _, tokens = world
     with (
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
@@ -379,7 +391,7 @@ def test_frame_align_last_write_wins(world) -> None:  # type: ignore[no-untyped-
                 },
             }
         )
-        # 舞台未连（无双人），下一条 frame_align 覆盖暂存
+        # 回退到 0 的迟到消息不会覆盖当前锚点
         ws_console.send_json(
             {
                 "type": "director_command",
@@ -402,7 +414,10 @@ def test_frame_align_last_write_wins(world) -> None:  # type: ignore[no-untyped-
         )
         with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage:
             p = _state_sync(ws_stage)
-            assert p["frame_align"] == {"t_us": 456, "ready_a": False, "ready_b": False}
+            assert (
+                p["frame_align"].items()
+                >= {"t_us": 456, "ready_a": False, "ready_b": False}.items()
+            )
             assert p["align_authority_src"] == "docA"
 
 

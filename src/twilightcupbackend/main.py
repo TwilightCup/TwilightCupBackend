@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
 
 import uvicorn
@@ -112,7 +114,16 @@ def create_app(db: DBController | None = None) -> FastAPI:
         app.state.registry = registry
         app.state.connection_manager = connection_manager
         app.state.storage = storage
-        yield
+        align_watchdog = asyncio.create_task(
+            connection_manager.watch_align_authorities()
+        )
+        try:
+            yield
+        finally:
+            align_watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await align_watchdog
+            await connection_manager._flush_align_notifications()
         if own_db:
             ctl.close()
         logger.info("TwilightCup backend shutting down.")
