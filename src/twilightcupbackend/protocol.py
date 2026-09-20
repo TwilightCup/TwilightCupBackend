@@ -259,6 +259,7 @@ class FrameAlignStatus(BaseModel):
     match_id: str
     authority_epoch: int = Field(ge=0, le=2**53 - 1)
     seq: int = Field(ge=0, le=2**53 - 1)
+    timeline_version: int = Field(default=0, ge=0, le=2**53 - 1)
     capability: bool
     visibility: Literal["visible", "hidden"]
     progress_t_us: int = Field(ge=0, le=2**53 - 1)
@@ -267,6 +268,27 @@ class FrameAlignStatus(BaseModel):
     state: Literal["running", "media_wait", "paused", "relinquish"]
     active_sides: list[Literal["A", "B"]] = Field(max_length=2)
     waiting_sides: list[Literal["A", "B"]] = Field(max_length=2)
+
+
+class FrameAlignReset(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    connection_id: str
+    account_id: str
+    match_id: str
+    authority_epoch: int = Field(ge=0, le=2**53 - 1)
+    timeline_version: int = Field(ge=0, le=2**53 - 1)
+    target_t_us: int = Field(gt=0, le=2**53 - 1)
+
+
+class FrameAlignResetAck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    authority_epoch: int = Field(ge=0, le=2**53 - 1)
+    timeline_version: int = Field(ge=0, le=2**53 - 1)
+    outcome: Literal["presented", "failed"]
+    presented_t_us: int | None = Field(default=None, gt=0, le=2**53 - 1)
+    reason: Literal["media_unavailable", "prepare_failed"] | None = None
 
 
 class ClientDirectorCommand(BaseModel):
@@ -291,6 +313,8 @@ class ClientDirectorCommand(BaseModel):
     输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
     frame_align_status: FrameAlignStatus 严格类型的控制台租约，所有范围强制使用。
     握手用途不在 payload 中携带，stage 不能以 capability=true 自行升级角色。
+    frame_align_reset/frame_align_reset_ack: 显式时间轴重置请求及实际呈现确认，
+    详见 docs/frame-align-reset.md；普通换主不解除 T 单调下限。
     完整字段与生命周期见 docs/frame-align-authority.md。
     """
 
@@ -306,6 +330,8 @@ class ClientDirectorCommand(BaseModel):
         "config_update",
         "frame_align",
         "frame_align_status",
+        "frame_align_reset",
+        "frame_align_reset_ack",
     ]
     # 指令载荷（见类 docstring）
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -390,6 +416,7 @@ class SrvAuthOk(BaseModel):
     player_b_name: str | None = None  # 选手 B 展示名
 
     connection_id: str | None = None
+    timeline_version: int = 0
     align_lease_required: bool = False
     align_role: Literal["publisher", "follower"] | None = None
     align_authority_src: str | None = None

@@ -57,6 +57,8 @@ from .protocol import (
     ClientSubsegmentHit,
     ClientSubsegmentSample,
     ClientUtcTimestamp,
+    FrameAlignReset,
+    FrameAlignResetAck,
     FrameAlignStatus,
     ServerMessage,
     SrvAuthError,
@@ -180,6 +182,12 @@ class _DirectorState:
     has_history: bool = False
     lease_mode: bool = True
     align_keepalive_ms: int = 0
+    timeline_version: int = 0
+    reset_state: dict[str, Any] | None = None
+    reset_deadline_ms: int | None = None
+    reset_requests: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = (
+        field(default_factory=dict)
+    )
     takeover_deadline_ms: int | None = None
     align_anchor: dict[str, Any] | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -329,6 +337,7 @@ class ConnectionManager:
                 align_authority_src=st.align_authority_src if st else None,
                 authority_epoch=auth_epoch if seat == Seat.DIRECTOR else None,
                 align_lease_required=st.lease_mode if st else False,
+                timeline_version=st.timeline_version if st else 0,
                 account_id=account.id,
                 display_name=account.display_name,
                 seat=seat.name,
@@ -549,6 +558,8 @@ class ConnectionManager:
         if st.align_owner is owner:
             return
         previous = st.align_owner
+        if st.reset_state and st.reset_state["status"] == "preparing":
+            self._finish_align_reset(st, "failed", "OWNER_LOST")
         st.align_owner = owner
         st.takeover_deadline_ms = (
             _align_now_ms() + _ALIGN_TAKEOVER_MS if st.lease_mode and owner else None
@@ -606,6 +617,8 @@ class ConnectionManager:
                     "lease_timeout_ms": _ALIGN_AUTHORITY_TIMEOUT_MS,
                     "takeover_timeout_ms": _ALIGN_TAKEOVER_MS,
                     "t_floor_us": st.frame_align_t_us,
+                    "timeline_version": st.timeline_version,
+                    "reset": st.reset_state,
                 },
             ),
         )
@@ -799,6 +812,9 @@ class ConnectionManager:
                         (conn.account_id, conn.match_id), _DirectorState()
                     )
                     async with st.align_lock:
+                        if act in ("frame_align_reset", "frame_align_reset_ack"):
+                            await self._handle_align_reset(conn, st, act, pl)
+                            return
                         if act == "frame_align_status":
                             await self._receive_align_status(conn, st, pl)
                             return
@@ -1135,6 +1151,20 @@ class ConnectionManager:
             or conn.align_client != "console"
         ):
             return False, False
+        if (
+            type(payload.get("timeline_version", 0)) is not int
+            or payload.get("timeline_version", 0) != st.timeline_version
+        ):
+            return False, False
+        if (
+            st.reset_state
+            and st.reset_state["status"] != "completed"
+            and (
+                st.reset_state["status"] == "preparing"
+                or st.reset_state["owner_id"] == conn.connection_id
+            )
+        ):
+            return False, False
         if st.lease_mode:
             lease = conn.align_lease
             status = lease.status
@@ -1229,6 +1259,8 @@ class ConnectionManager:
             **payload,
             "authority_epoch": st.align_epoch,
             "epoch": st.align_epoch,
+            "timeline_version": st.timeline_version,
+            "reset": st.reset_state,
             "seq": st.align_seq,
             "t_us": t,
             "rate": float(rate),
@@ -1292,9 +1324,20 @@ class ConnectionManager:
         if store is None:
             return
         msg = SrvDirectorCommand(action="frame_align", payload=self._align_snapshot(st))
+        epoch = st.align_epoch
         for conn in list(store.directors):
+            if st.align_epoch != epoch:
+                return
             if conn.account_id == account_id and conn.auth_sent:
                 try:
+                    if st.reset_state:
+                        await self._send(
+                            conn,
+                            SrvDirectorCommand(
+                                action="frame_align_reset_result",
+                                payload=dict(st.reset_state),
+                            ),
+                        )
                     await self._send(conn, msg)
                 except Exception:
                     self._remove_connection(store, conn)
@@ -1303,6 +1346,266 @@ class ConnectionManager:
     async def _flush_align_notifications(self) -> None:
         while self._align_notifications:
             await asyncio.gather(*self._align_notifications)
+
+    async def _reset_reply(
+        self, conn: Connection, st: _DirectorState, request_id: Any, code: str
+    ) -> None:
+        await self._send(
+            conn,
+            SrvDirectorCommand(
+                action="frame_align_reset_result",
+                payload={
+                    "request_id": request_id if isinstance(request_id, str) else None,
+                    "status": "rejected",
+                    "code": code,
+                    "timeline_version": st.timeline_version,
+                    "authority_epoch": st.align_epoch,
+                    "server_time_ms": _now_ms(),
+                },
+            ),
+        )
+
+    def _finish_align_reset(
+        self,
+        st: _DirectorState,
+        status: str,
+        code: str,
+        presented_t_us: int | None = None,
+    ) -> None:
+        reset = st.reset_state
+        if reset is None or reset["status"] != "preparing":
+            return
+        now = _now_ms()
+        st.reset_state = {
+            **reset,
+            "status": status,
+            "code": code,
+            "server_time_ms": now,
+        }
+        st.reset_state["presented_t_us"] = presented_t_us
+        st.reset_deadline_ms = None
+        st.align_seq += 1
+        if presented_t_us is not None:
+            st.frame_align_t_us = presented_t_us
+            st.align_authority_last_ms = now
+        st.frame_align_ready_a = st.frame_align_ready_b = False
+        if st.align_anchor is not None:
+            active = st.align_anchor.get("active_sides", [])
+            st.frame_align_ready_a = status == "completed" and "A" in active
+            st.frame_align_ready_b = status == "completed" and "B" in active
+            st.align_anchor = {
+                **st.align_anchor,
+                "reset": dict(st.reset_state),
+                "seq": st.align_seq,
+                "t_us": st.frame_align_t_us,
+                "frozen": status != "completed",
+                "paused": False,
+                "stale": status != "completed",
+                "rate": 1.0,
+                "ready_a": st.frame_align_ready_a,
+                "ready_b": st.frame_align_ready_b,
+                "reason": "reset_completed"
+                if status == "completed"
+                else "reset_failed",
+                "effective_at_ms": now,
+                "server_time_ms": now,
+                "server_now_ms": now,
+            }
+        key = (reset["owner_id"], reset["request_id"])
+        original, _ = st.reset_requests[key]
+        st.reset_requests[key] = (original, dict(st.reset_state))
+
+    async def _handle_align_reset(
+        self, conn: Connection, st: _DirectorState, action: str, payload: dict[str, Any]
+    ) -> None:
+        request_id = payload.get("request_id")
+        store = self.registry.get(conn.match_id)
+        status = conn.align_lease.status
+        if (
+            store is None
+            or not store.has_connection(conn)
+            or st.align_owner is not conn
+            or conn.align_client != "console"
+            or conn.seat != Seat.DIRECTOR
+        ):
+            await self._reset_reply(conn, st, request_id, "NOT_AUTHORITY")
+            return
+        if (
+            status is None
+            or not status.capability
+            or status.state == "relinquish"
+            or _align_now_ms() - conn.align_lease.received_ms
+            > _ALIGN_AUTHORITY_TIMEOUT_MS
+            or st.takeover_deadline_ms is not None
+        ):
+            await self._reset_reply(conn, st, request_id, "LEASE_INVALID")
+            return
+        try:
+            msg = (
+                FrameAlignReset.model_validate(payload)
+                if action == "frame_align_reset"
+                else FrameAlignResetAck.model_validate(payload)
+            )
+        except ValidationError:
+            await self._reset_reply(conn, st, request_id, "INVALID_REQUEST")
+            return
+        if st.reset_deadline_ms is not None and _align_now_ms() > st.reset_deadline_ms:
+            self._finish_align_reset(st, "failed", "PREPARE_TIMEOUT")
+            await self._broadcast_align_scope(conn.account_id, conn.match_id)
+        key = (conn.connection_id, msg.request_id)
+        if isinstance(msg, FrameAlignReset):
+            if (
+                msg.connection_id != conn.connection_id
+                or msg.account_id != conn.account_id
+                or msg.match_id != conn.match_id
+            ):
+                await self._reset_reply(conn, st, request_id, "SCOPE_MISMATCH")
+                return
+            cached = st.reset_requests.get(key)
+            if cached:
+                if cached[0] != msg.model_dump():
+                    await self._reset_reply(conn, st, request_id, "REQUEST_ID_CONFLICT")
+                else:
+                    await self._send(
+                        conn,
+                        SrvDirectorCommand(
+                            action="frame_align_reset_result", payload=dict(cached[1])
+                        ),
+                    )
+                return
+        if (
+            msg.authority_epoch != st.align_epoch
+            or msg.timeline_version != st.timeline_version
+        ):
+            await self._reset_reply(conn, st, request_id, "STALE_VERSION")
+            return
+        if isinstance(msg, FrameAlignResetAck):
+            reset = st.reset_state
+            if (
+                reset is None
+                or reset["request_id"] != msg.request_id
+                or reset["owner_id"] != conn.connection_id
+            ):
+                await self._reset_reply(conn, st, request_id, "NO_TRANSACTION")
+                return
+            if reset["status"] != "preparing":
+                await self._send(
+                    conn,
+                    SrvDirectorCommand(
+                        action="frame_align_reset_result", payload=dict(reset)
+                    ),
+                )
+                return
+            if msg.outcome == "failed":
+                if msg.reason is None or msg.presented_t_us is not None:
+                    await self._reset_reply(conn, st, request_id, "INVALID_REQUEST")
+                    return
+                self._finish_align_reset(st, "failed", msg.reason.upper())
+            else:
+                t = msg.presented_t_us
+                if (
+                    t is None
+                    or msg.reason is not None
+                    or not status.decode_ready
+                    or not status.media_ready
+                    or not status.active_sides
+                    or status.state != "running"
+                    or status.timeline_version != st.timeline_version
+                    or status.authority_epoch != st.align_epoch
+                    or not reset["target_t_us"] <= t <= reset["target_t_us"] + 1_000_000
+                    or status.progress_t_us < t
+                ):
+                    await self._reset_reply(conn, st, request_id, "NOT_PRESENTED")
+                    return
+                if st.align_anchor is not None:
+                    st.align_anchor.update(
+                        active_sides=status.active_sides,
+                        waiting_sides=status.waiting_sides,
+                    )
+                self._finish_align_reset(st, "completed", "OK", t)
+            await self._broadcast_align_scope(conn.account_id, conn.match_id)
+            return
+        if st.reset_state and st.reset_state["status"] == "preparing":
+            await self._reset_reply(conn, st, request_id, "RESET_BUSY")
+            return
+        now = _now_ms()
+        if not (now - 86_400_000) * 1000 <= msg.target_t_us <= (now + 5_000) * 1000:
+            await self._reset_reply(conn, st, request_id, "TARGET_OUT_OF_RANGE")
+            return
+        st.timeline_version += 1
+        st.align_epoch = self._next_authority_epoch()
+        st.align_seq = 0
+        st.align_client_seq = None
+        st.frame_align_t_us = msg.target_t_us
+        st.frame_align_ready_a = st.frame_align_ready_b = False
+        st.align_authority_last_ms = None
+        st.reset_deadline_ms = _align_now_ms() + 10_000
+        st.reset_state = {
+            "request_id": msg.request_id,
+            "status": "preparing",
+            "code": "PREPARING",
+            "timeline_version": st.timeline_version,
+            "authority_epoch": st.align_epoch,
+            "epoch": st.align_epoch,
+            "owner_id": conn.connection_id,
+            "src": conn.connection_id,
+            "account_id": conn.account_id,
+            "match_id": conn.match_id,
+            "target_t_us": msg.target_t_us,
+            "server_time_ms": now,
+            "prepare_timeout_ms": 10000,
+        }
+        st.reset_requests[key] = (msg.model_dump(), dict(st.reset_state))
+        if len(st.reset_requests) > 128:
+            del st.reset_requests[next(iter(st.reset_requests))]
+        for page in store.directors:
+            if page.account_id != conn.account_id:
+                continue
+            page.align_lease.eligible_since_ms = None
+            page.align_lease.progressed_ms = 0
+            if page is conn:
+                page.align_lease.status = status.model_copy(
+                    update={
+                        "timeline_version": st.timeline_version,
+                        "authority_epoch": st.align_epoch,
+                        "progress_t_us": 0,
+                        "media_ready": False,
+                        "decode_ready": False,
+                        "state": "media_wait",
+                        "active_sides": [],
+                        "waiting_sides": ["A", "B"],
+                    }
+                )
+            else:
+                page.align_lease.status = None
+        st.align_anchor = {
+            **(st.align_anchor or {}),
+            "src": conn.connection_id,
+            "source_id": (st.align_anchor or {}).get("source_id", conn.connection_id),
+            "account_id": conn.account_id,
+            "match_id": conn.match_id,
+            "scene": (st.align_anchor or {}).get("scene", st.scene or ""),
+            "timeline_version": st.timeline_version,
+            "reset": dict(st.reset_state),
+            "authority_epoch": st.align_epoch,
+            "epoch": st.align_epoch,
+            "seq": 0,
+            "t_us": msg.target_t_us,
+            "rate": 1.0,
+            "paused": False,
+            "frozen": True,
+            "stale": False,
+            "ready_a": False,
+            "ready_b": False,
+            "active_sides": [],
+            "waiting_sides": ["A", "B"],
+            "reason": "reset_preparing",
+            "effective_at_ms": now,
+            "server_time_ms": now,
+            "server_now_ms": now,
+        }
+        await self._announce_authority(conn.account_id, conn.match_id, st)
+        await self._broadcast_align_scope(conn.account_id, conn.match_id)
 
     def _lease_candidate(self, conn: Connection, now: int) -> bool:
         lease = conn.align_lease
@@ -1342,6 +1645,7 @@ class ConnectionManager:
             or status.account_id != conn.account_id
             or status.match_id != conn.match_id
             or status.authority_epoch != st.align_epoch
+            or status.timeline_version != st.timeline_version
             or (lease.status is not None and status.seq <= lease.status.seq)
             or sorted(sides) != ["A", "B"]
         ):
@@ -1394,6 +1698,12 @@ class ConnectionManager:
         status = owner.align_lease.status if owner else None
         reason = "no_candidate"
         replace = owner is None
+        reset_hold = bool(
+            st.reset_state
+            and st.reset_state["status"] != "completed"
+            and owner
+            and st.reset_state["owner_id"] == owner.connection_id
+        )
         if owner is not None:
             if (
                 status is None
@@ -1405,11 +1715,18 @@ class ConnectionManager:
             elif st.takeover_deadline_ms is not None and now > st.takeover_deadline_ms:
                 reason, replace = "takeover_timeout", True
             elif st.takeover_deadline_ms is None and (
-                status.state != "running"
+                reset_hold
+                or status.state != "running"
                 or not status.media_ready
                 or not status.decode_ready
             ):
-                reason = "paused" if status.state == "paused" else "media_wait"
+                reason = (
+                    "reset_" + st.reset_state["status"]
+                    if reset_hold and st.reset_state
+                    else "paused"
+                    if status.state == "paused"
+                    else "media_wait"
+                )
                 if st.align_anchor is not None:
                     changed = (
                         not st.align_anchor.get("frozen")
@@ -1470,6 +1787,12 @@ class ConnectionManager:
         if st is None:
             return
         async with st.align_lock:
+            if (
+                st.reset_deadline_ms is not None
+                and _align_now_ms() > st.reset_deadline_ms
+            ):
+                self._finish_align_reset(st, "failed", "PREPARE_TIMEOUT")
+                await self._broadcast_align_scope(account_id, match_id)
             if st.lease_mode:
                 await self._reconcile_align_lease(account_id, match_id, st)
             status = st.align_owner.align_lease.status if st.align_owner else None
@@ -1514,6 +1837,8 @@ class ConnectionManager:
             },
             "config": st.config,
             "align_lease_required": st.lease_mode,
+            "timeline_version": st.timeline_version,
+            "reset": st.reset_state,
         }
         # frame_align 独立键、不合并进 state_sync：仅该场收到过才补发权威 T。
         if st.align_anchor is not None:
