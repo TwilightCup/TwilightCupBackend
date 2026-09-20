@@ -9,6 +9,7 @@ import pytest
 from twilightcupbackend import connection_manager as module
 from twilightcupbackend.connection_manager import ConnectionManager
 from twilightcupbackend.datatypes import Seat
+from twilightcupbackend.protocol import FrameAlignStatus
 from twilightcupbackend.stores import Connection, MatchRegistry
 
 
@@ -19,16 +20,51 @@ def scope(world):
     cm.match_engine = client.app.state.connection_manager.match_engine
     store = cm.registry.get_or_create(match)
     pages = [
-        Connection(AsyncMock(), match.director_id, "d", Seat.DIRECTOR, match.id)
+        Connection(
+            AsyncMock(),
+            match.director_id,
+            "d",
+            Seat.DIRECTOR,
+            match.id,
+            align_client="console",
+        )
         for _ in range(3)
     ]
     for conn in pages:
         cm._add_director(store, conn)
         conn.auth_sent = True
+        now = module._align_now_ms()
+        conn.align_lease.status = FrameAlignStatus(
+            connection_id=conn.connection_id,
+            account_id=conn.account_id,
+            match_id=conn.match_id,
+            authority_epoch=0,
+            seq=0,
+            capability=True,
+            visibility="visible",
+            progress_t_us=0,
+            media_ready=True,
+            decode_ready=True,
+            state="running",
+            active_sides=["A", "B"],
+            waiting_sides=[],
+        )
+        conn.align_lease.received_ms = now
+        conn.align_lease.eligible_since_ms = now - 2001
+    st = cm._director_state[(pages[0].account_id, pages[0].match_id)]
+    cm._set_align_owner(st, pages[0], "test_ready")
+    st.takeover_deadline_ms = None
     return cm, pages, store
 
 
 def publish(cm, conn, **payload):
+    st = cm._director_state[(conn.account_id, conn.match_id)]
+    payload.setdefault("epoch", st.align_epoch)
+    payload.setdefault("seq", (st.align_client_seq or 0) + 1)
+    return raw_publish(cm, conn, **payload)
+
+
+def raw_publish(cm, conn, **payload):
     return cm._update_director_state(
         conn.account_id, conn.match_id, "frame_align", payload, conn
     )
@@ -130,6 +166,9 @@ async def test_timeout_freezes_without_electing_or_advancing(scope, monkeypatch)
     assert not snapshot(cm, source)["frozen"]
     cm._remove_connection(store, source)
     await cm._flush_align_notifications()
+    from tests.test_frame_align_lease import report
+
+    await report(cm, follower, 1, progress_t_us=12000000)
     assert publish(cm, follower, t_us=12000000)[0]
     assert not publish(cm, source, t_us=13000000)[0]
 

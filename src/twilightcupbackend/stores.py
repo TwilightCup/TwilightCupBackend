@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import WebSocket
@@ -39,6 +40,7 @@ class Connection:
     match_id: str
     # 客户端能力声明（?cap= 逗号分隔；如 preload1 = 会上报预载状态）
     capabilities: frozenset[str] = frozenset()
+    align_client: Literal["console", "stage"] | None = None
     connection_id: str = field(default_factory=lambda: uuid4().hex)
     director_order: int = 0
     auth_sent: bool = False

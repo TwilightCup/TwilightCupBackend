@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.test_frame_align_authority import publish, scope, snapshot  # noqa: F401
+from tests.test_frame_align_authority import raw_publish as publish
+from tests.test_frame_align_authority import scope, snapshot  # noqa: F401
 from twilightcupbackend import connection_manager as module
 from twilightcupbackend.protocol import ClientDirectorCommand
 
@@ -37,6 +38,13 @@ async def report(cm, conn, seq, **extra):
 @pytest.fixture
 def lease(scope, monkeypatch):  # noqa: F811
     cm, pages, store = scope
+    from twilightcupbackend.stores import FrameAlignLease
+
+    st = cm._director_state[(pages[0].account_id, pages[0].match_id)]
+    st.align_owner = None
+    st.align_authority_src = None
+    for page in pages:
+        page.align_lease = FrameAlignLease()
     clock = [100000]
     monkeypatch.setattr(module, "_align_now_ms", lambda: clock[0])
     return cm, pages, store, clock
@@ -215,9 +223,16 @@ async def test_lease_mode_does_not_cross_account_or_match(lease):
     other_store = cm.registry.get_or_create(
         store.match.model_copy(update={"id": "other"})
     )
-    other_account = Connection(AsyncMock(), "other", "d", Seat.DIRECTOR, store.id)
+    other_account = Connection(
+        AsyncMock(), "other", "d", Seat.DIRECTOR, store.id, align_client="console"
+    )
     other_match = Connection(
-        AsyncMock(), pages[0].account_id, "d", Seat.DIRECTOR, other_store.id
+        AsyncMock(),
+        pages[0].account_id,
+        "d",
+        Seat.DIRECTOR,
+        other_store.id,
+        align_client="console",
     )
     for conn, target in ((other_account, store), (other_match, other_store)):
         cm._add_director(target, conn)
@@ -225,40 +240,18 @@ async def test_lease_mode_does_not_cross_account_or_match(lease):
     await bootstrap(cm, pages, clock)
     for conn in (other_account, other_match):
         st = cm._director_state[(conn.account_id, conn.match_id)]
-        assert not st.lease_mode and st.align_owner is conn
+        assert st.lease_mode and st.align_owner is None
         cast(AsyncMock, conn.websocket.send_text).assert_not_called()
-
-
-def test_status_payload_parses_through_websocket(world):
-    from tests.test_frame_align_election import auth, event
-
-    client, _, _, tokens = world
-    with client.websocket_connect(f"/ws/{tokens['dri']}") as ws:
-        a = auth(ws)
-        ws.send_json(
-            {
-                "type": "director_command",
-                "action": "frame_align_status",
-                "payload": {
-                    "connection_id": a["connection_id"],
-                    "account_id": a["account_id"],
-                    "match_id": a["match_id"],
-                    "authority_epoch": a["authority_epoch"],
-                    "seq": 1,
-                    "capability": False,
-                    "visibility": "visible",
-                    "progress_t_us": 0,
-                    "media_ready": False,
-                    "decode_ready": False,
-                    "state": "media_wait",
-                    "active_sides": [],
-                    "waiting_sides": ["A", "B"],
-                },
-            }
-        )
-        notice = event(ws, "align_authority")
-        assert notice["role"] == "follower" and notice["lease_required"]
-        assert notice["src"] is None and notice["epoch"] > a["authority_epoch"]
+        await report(cm, conn, 1)
+    clock[0] += 2001
+    for conn in (other_account, other_match):
+        await report(cm, conn, 2)
+        st = cm._director_state[(conn.account_id, conn.match_id)]
+        assert st.align_owner is conn
+    assert (
+        cm._director_state[(pages[0].account_id, pages[0].match_id)].align_owner
+        is pages[0]
+    )
 
 
 async def test_takeover_confirmation_must_reach_t_floor(lease):

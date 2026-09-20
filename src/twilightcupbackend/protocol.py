@@ -286,11 +286,11 @@ class ClientDirectorCommand(BaseModel):
     "seq"?, "epoch"/"authority_epoch"?, "rate"?, "paused"?, "frozen"?}。
     t_us 是非负 JS safe integer 微秒；rate 为 0..1.08；状态必须是 bool。
     可选 account_id/match_id 必须匹配认证连接。服务端按账号+比赛选举并绑定
-    最早连接的 publisher WebSocket，断开后按连接顺序接任；5 秒静默只冻结。
+    align_client=console 且租约/解码就绪的 publisher；舞台和未声明用途者只接收。
     非 source、旧 epoch/seq、回退 T 均忽略。
     输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
-    frame_align_status: FrameAlignStatus 严格类型的页面租约；首次合法上报启用
-    该账号+比赛的能力/活跃租约选举。旧连接顺序模式仅适用于未启用的范围。
+    frame_align_status: FrameAlignStatus 严格类型的控制台租约，所有范围强制使用。
+    握手用途不在 payload 中携带，stage 不能以 capability=true 自行升级角色。
     完整字段与生命周期见 docs/frame-align-authority.md。
     """
 

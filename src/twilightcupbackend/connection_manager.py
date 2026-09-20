@@ -178,7 +178,8 @@ class _DirectorState:
     align_seq: int = 0
     align_client_seq: int | None = None
     has_history: bool = False
-    lease_mode: bool = False
+    lease_mode: bool = True
+    align_keepalive_ms: int = 0
     takeover_deadline_ms: int | None = None
     align_anchor: dict[str, Any] | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -226,6 +227,7 @@ class ConnectionManager:
         requested_match: str | None = None,
         capabilities: str | None = None,
         exclusive: bool = False,
+        align_client: str | None = None,
     ) -> Connection | None:
         """鉴权并登记连接；失败时接受后发送 auth_error 并关闭。
 
@@ -234,6 +236,7 @@ class ConnectionManager:
         requested_match 指定时（如裁判多标签页选某场），连到该比赛
         并校验账号是其成员；否则自动挑选该账号最新一场（兼容选手/导播）。
         capabilities 为 ``?cap=`` 逗号分隔的能力声明（如 ``preload1``）。
+        align_client 仅 console/stage；缺失为只接收，console 也须通过租约就绪检查。
         exclusive 为真时要求独占身份 key（账号+座位+比赛）：同 key 既有连接
         （无论对方是否 exclusive）先收 displaced 再被 close(4001) 顶掉；
         key 含 match，故裁判不同场多标签、多角色多座位、导播不带 exclusive 的
@@ -273,6 +276,10 @@ class ConnectionManager:
             return None
 
         await websocket.accept()
+        if align_client is not None and align_client not in ("console", "stage"):
+            await self._send_model(websocket, SrvAuthError(msg="Invalid align_client"))
+            await websocket.close(code=1008)
+            return None
         store = self.registry.get_or_create(match)
         conn = Connection(
             websocket=websocket,
@@ -280,6 +287,7 @@ class ConnectionManager:
             display_name=account.display_name,
             seat=seat,
             match_id=match.id,
+            align_client=align_client,
             capabilities=frozenset(
                 c.strip() for c in (capabilities or "").split(",") if c.strip()
             ),
@@ -498,23 +506,22 @@ class ConnectionManager:
         return self._authority_epoch
 
     def _add_director(self, store: MatchStore, conn: Connection) -> None:
-        # Registration/election has no await: first registered is the publisher.
+        # Registration never elects a publisher: a console must first prove readiness.
         self._director_order += 1
         conn.director_order = self._director_order
         store.directors.add(conn)
         st = self._director_state.setdefault(
             (conn.account_id, store.id), _DirectorState()
         )
-        if st.align_owner is None and not st.lease_mode:
-            self._select_oldest(store, conn.account_id, st)
+        if st.align_epoch == 0:
+            st.align_epoch = self._next_authority_epoch()
 
     def _select_oldest(
         self, store: MatchStore, account_id: str, st: _DirectorState
     ) -> None:
         candidates = [c for c in store.directors if c.account_id == account_id]
         now = _align_now_ms()
-        if st.lease_mode:
-            candidates = [c for c in candidates if self._lease_candidate(c, now)]
+        candidates = [c for c in candidates if self._lease_candidate(c, now)]
         owner = (
             min(
                 candidates,
@@ -537,6 +544,8 @@ class ConnectionManager:
     def _set_align_owner(
         self, st: _DirectorState, owner: Connection | None, reason: str
     ) -> None:
+        if owner is not None and not self._lease_candidate(owner, _align_now_ms()):
+            owner = None
         if st.align_owner is owner:
             return
         previous = st.align_owner
@@ -1117,9 +1126,14 @@ class ConnectionManager:
         """Validate elected publisher; only the server assigns output epoch/sequence.
 
         Input seq is the publisher's independent sequence, not the server sequence
-        (which also counts freeze transitions). Legacy publishers may omit it.
+        (which also counts freeze transitions). Every publisher must provide it.
         """
-        if conn is None or st.align_owner is not conn:
+        if (
+            conn is None
+            or st.align_owner is not conn
+            or conn.seat != Seat.DIRECTOR
+            or conn.align_client != "console"
+        ):
             return False, False
         if st.lease_mode:
             lease = conn.align_lease
@@ -1294,7 +1308,9 @@ class ConnectionManager:
         lease = conn.align_lease
         status = lease.status
         return bool(
-            status
+            conn.seat == Seat.DIRECTOR
+            and conn.align_client == "console"
+            and status
             and status.capability
             and status.media_ready
             and status.decode_ready
@@ -1309,6 +1325,8 @@ class ConnectionManager:
     async def _receive_align_status(
         self, conn: Connection, st: _DirectorState, payload: dict[str, Any]
     ) -> None:
+        if conn.seat != Seat.DIRECTOR or conn.align_client != "console":
+            return
         try:
             status = FrameAlignStatus.model_validate(payload)
         except ValidationError:
@@ -1355,12 +1373,6 @@ class ConnectionManager:
         lease.blocked = False
         lease.status = status
         lease.received_ms = now
-        if not st.lease_mode:
-            st.lease_mode = True
-            self._set_align_owner(st, None, "lease_mode_enabled")
-            await self._announce_authority(conn.account_id, conn.match_id, st)
-            if st.align_anchor is not None:
-                await self._broadcast_align_scope(conn.account_id, conn.match_id)
         if (
             st.align_owner is conn
             and ready
@@ -1405,11 +1417,12 @@ class ConnectionManager:
                         or st.align_anchor.get("active_sides") != status.active_sides
                         or st.align_anchor.get("waiting_sides") != status.waiting_sides
                     )
-                    if changed:
+                    if changed or now - st.align_keepalive_ms >= 750:
                         st.align_anchor["stale"] = False
                         self._freeze_align(st, reason)
                         st.align_anchor.update(
                             reason=reason,
+                            stale=False,
                             active_sides=status.active_sides,
                             waiting_sides=status.waiting_sides,
                         )
@@ -1419,6 +1432,7 @@ class ConnectionManager:
                             match_id,
                             reason,
                         )
+                        st.align_keepalive_ms = now
                         await self._broadcast_align_scope(account_id, match_id)
         if replace:
             if owner is not None:
@@ -1458,8 +1472,15 @@ class ConnectionManager:
         async with st.align_lock:
             if st.lease_mode:
                 await self._reconcile_align_lease(account_id, match_id, st)
+            status = st.align_owner.align_lease.status if st.align_owner else None
+            media_wait = status is not None and (
+                status.state in ("media_wait", "paused")
+                or not status.media_ready
+                or not status.decode_ready
+            )
             if (
                 st.align_authority_last_ms is not None
+                and not media_wait
                 and _now_ms() - st.align_authority_last_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
                 and self._freeze_align(st)
             ):

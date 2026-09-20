@@ -21,6 +21,7 @@ def register_ws(app: FastAPI) -> None:
         match: str | None = None,
         cap: str | None = None,
         exclusive: str | None = None,
+        align_client: str | None = None,
     ) -> None:
         """seat 为可选 query 参数，多角色账号用以指定本连接的座位身份；
         match 为可选 query 参数，连到指定比赛（裁判多标签页选场）；
@@ -29,7 +30,13 @@ def register_ws(app: FastAPI) -> None:
         见 ConnectionManager.connect）——裁判端/选手端用，导播 OBS 多源不带。"""
         cm: ConnectionManager = app.state.connection_manager
         conn = await cm.connect(
-            websocket, token, seat, match, cap, exclusive=exclusive in ("1", "true")
+            websocket,
+            token,
+            seat,
+            match,
+            cap,
+            exclusive=exclusive in ("1", "true"),
+            align_client=align_client,
         )
         if conn is None:
             return
