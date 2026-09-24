@@ -318,3 +318,98 @@ def test_cp_pick_carries_checkpoint_and_mappool_retry(world) -> None:  # type: i
         rs = _drive_to_round_start(ws_r, ws_a, "CP01", ["Checkpoint"])
         assert rs["pick"]["tags"] == ["Checkpoint"]
         assert rs["pick"]["retry_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 图池固有 Glitchless（ML/IL/CP/TB）：裁判自动附带；不计入 ct_tag_count 上限
+# ---------------------------------------------------------------------------
+
+
+def _match_with_glitchless(  # type: ignore[no-untyped-def]
+    db, session, code: str, *, ct_tag_count: int = 2
+) -> Match:
+    """复制现场图池并把指定选图置为固有 Glitchless，另建一场 RUNNING 比赛。"""
+    mappool = session.mappool.model_copy(deep=True)
+    for cat in mappool.categories:
+        for p in cat.picks:
+            if p.code == code:
+                p.tag = "Glitchless"
+    m = Match(
+        name=f"gl-{code}",
+        bo_format=3,
+        win_threshold=2,
+        scoring_method=ScoringMethod.FASTEST,
+        start_countdown_delay=2,
+        ct_tag_count=ct_tag_count,
+        mappool=mappool,
+        player_a_id=session.player_a_id,
+        player_b_id=session.player_b_id,
+        referee_id=session.referee_id,
+        director_id=session.director_id,
+        status=MatchStatus.RUNNING,
+    )
+    db.matches.insert(m)
+    return m
+
+
+def test_inherent_glitchless_attached_for_ml(world) -> None:  # type: ignore[no-untyped-def]
+    """ML 选图置 Glitchless → 裁判提交该词条被接受，开局冻结进快照。"""
+    client, db, session, _ = world
+    _match_with_glitchless(db, session, "ML1")
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
+    with (
+        client.websocket_connect(f"/ws/{tok_r}") as ws_r,
+        client.websocket_connect(f"/ws/{tok_a}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        rs = _drive_to_round_start(ws_r, ws_a, "ML1", ["Glitchless"])
+        assert rs["pick"]["tags"] == ["Glitchless"]
+        assert rs["pick"]["tag"] == "Glitchless"
+
+
+def test_inherent_glitchless_exempt_from_ct_tag_count(world) -> None:  # type: ignore[no-untyped-def]
+    """ct_tag_count=0：固有 Glitchless 不计入上限，仍可随选图提交。"""
+    client, db, session, _ = world
+    _match_with_glitchless(db, session, "ML1", ct_tag_count=0)
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
+    with (
+        client.websocket_connect(f"/ws/{tok_r}") as ws_r,
+        client.websocket_connect(f"/ws/{tok_a}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        rs = _drive_to_round_start(ws_r, ws_a, "ML1", ["Glitchless"])
+        assert rs["pick"]["tags"] == ["Glitchless"]
+
+
+def test_inherent_glitchless_for_cp_combines_with_checkpoint(world) -> None:  # type: ignore[no-untyped-def]
+    """CP 选图固有 Glitchless 与自动 Checkpoint 共存（上限 1 时 Checkpoint 占 1）。"""
+    client, db, session, _ = world
+    _match_with_glitchless(db, session, "CP01", ct_tag_count=1)
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
+    with (
+        client.websocket_connect(f"/ws/{tok_r}") as ws_r,
+        client.websocket_connect(f"/ws/{tok_a}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        rs = _drive_to_round_start(ws_r, ws_a, "CP01", ["Checkpoint", "Glitchless"])
+        assert rs["pick"]["tags"] == ["Checkpoint", "Glitchless"]
+
+
+def test_non_inherent_tag_still_rejected_for_glitchless_pick(world) -> None:  # type: ignore[no-untyped-def]
+    """置了固有 Glitchless 的 ML 选图仍拒绝其它非固有词条。"""
+    client, db, session, _ = world
+    m = _match_with_glitchless(db, session, "ML1")
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    with client.websocket_connect(f"/ws/{tok_r}?match={m.id}") as ws_r:
+        _drain(ws_r, 5)
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _drain(ws_r, 2)
+        _select(ws_r, "ML1", ["Pinch"], retry=None)
+        err = _recv_until(ws_r, lambda m: m["type"] == "error" and m["code"] == 400)
+        assert "tag" in err["msg"].lower()

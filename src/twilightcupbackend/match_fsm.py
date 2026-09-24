@@ -80,6 +80,10 @@ CT_CATEGORY = "CT"
 # 可携带词条的类别：CT（裁判选定）、EX（裁判选定，不受词条 ban 约束——仅前端约束，
 # 后端不区分）、CP（前端自动传入 Checkpoint）
 TAGGED_CATEGORIES = frozenset({"CT", "EX", "CP"})
+# 图池编辑器「Glitchless」单选可置的类别（选图固有词条）：裁判选图时前端自动附带，
+# 属选图自身属性，不受比赛级 ct_tag_count 上限约束。
+GLITCHLESS_TAG = "Glitchless"
+GLITCHLESS_CATEGORIES = frozenset({"ML", "IL", "CP", "TB"})
 # 重试次数改由裁判选图时指定的类别（单关必填）
 REFEREE_RETRY_CATEGORIES = frozenset({"CT", "EX"})
 # 分段命中结算静默期（秒，settled-event 模型）：同一平面的穿越可多次上报，
@@ -113,6 +117,17 @@ def _ct_category_tags(mappool: Mappool) -> list[str] | None:
     return None
 
 
+def _inherent_pick_tags(pick: Pick) -> set[str]:
+    """选图固有词条（图池编辑器「Glitchless」单选写入 Pick.tag）。
+
+    仅 ML/IL/CP/TB 类别的 Glitchless 生效；其余类别或词条不视为固有。
+    """
+    if pick.category not in GLITCHLESS_CATEGORIES:
+        return set()
+    raw = pick.tag or ""
+    return {t.strip() for t in raw.split(",") if t.strip() == GLITCHLESS_TAG}
+
+
 def _validate_pick_tags(
     pick: Pick,
     tags: list[str],
@@ -124,23 +139,37 @@ def _validate_pick_tags(
     规则（backend-ct-pick-tags §2.1，扩展到 CT/EX/CP）：仅这三类别可携带、
     数量 ≤ 本场 ct_tag_count、词条在图池 CT 类别支持范围内（旧图池回退内置
     枚举，单关额外允许 Achievement）、Checkpoint 与 No Checkpoint 互斥。
+
+    扩展（图池 Glitchless 固有词条）：ML/IL/CP/TB 选图置了 Glitchless 时，
+    裁判选图自动附带该词条；它属选图自身属性，**不计入 ct_tag_count 上限**，
+    非固有类别的其它词条仍照旧拒绝。
     """
     if not tags:
         return None
-    if pick.category not in TAGGED_CATEGORIES:
-        return "pick.tags_category", {"category": pick.category, "code": pick.code}
-    if len(tags) > limit:
+    inherent = _inherent_pick_tags(pick)
+    # 固有词条（Glitchless）不占用比赛级词条上限
+    counted = [t for t in tags if t not in inherent]
+    if len(counted) > limit:
         return "pick.tags_too_many", {"limit": limit, "tags": tags}
-    if pick.category == CT_CATEGORY and ct_tags is not None:
-        allowed = set(ct_tags)
-        if pick.type == PickType.SINGLE:
-            allowed |= CT_TAG_SINGLE_ONLY
+    if pick.category in TAGGED_CATEGORIES:
+        if pick.category == CT_CATEGORY and ct_tags is not None:
+            allowed = set(ct_tags)
+            if pick.type == PickType.SINGLE:
+                allowed |= CT_TAG_SINGLE_ONLY
+        else:
+            allowed = (
+                CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
+                if pick.type == PickType.SINGLE
+                else CT_TAG_VALUES
+            )
+        # 固有词条始终允许（即便未被图池 CT 类别列出）
+        allowed |= inherent
     else:
-        allowed = (
-            CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
-            if pick.type == PickType.SINGLE
-            else CT_TAG_VALUES
-        )
+        # 非词条类别：无固有词条时维持原语义（类别不能携带词条）
+        if not inherent:
+            return "pick.tags_category", {"category": pick.category, "code": pick.code}
+        # 有固有词条（Glitchless）时仅接受该固有词条
+        allowed = inherent
     for tag in tags:
         if tag not in allowed:
             return "pick.tags_invalid", {"tags": tag}
