@@ -128,6 +128,22 @@ def _inherent_pick_tags(pick: Pick) -> set[str]:
     return {t.strip() for t in raw.split(",") if t.strip() == GLITCHLESS_TAG}
 
 
+def _with_inherent_tags(pick: Pick, tags: list[str]) -> list[str]:
+    """把选图固有词条（Glitchless）并入裁判提交词条（幂等，保序追加）。
+
+    服务端兜底：图池选图置了 Glitchless 就必然随选图下发，不依赖裁判端
+    是否自动附带（降级手动选图 / 旧客户端同样生效）。
+    """
+    inherent = _inherent_pick_tags(pick)
+    if not inherent:
+        return tags
+    merged = list(tags)
+    for tag in sorted(inherent):
+        if tag not in merged:
+            merged.append(tag)
+    return merged
+
+
 def _validate_pick_tags(
     pick: Pick,
     tags: list[str],
@@ -377,6 +393,8 @@ class MatchEngine:
             )
             return
         tags = tags or []
+        # 固有 Glitchless 服务端兜底并入：图池置了该标签就必然随选图下发
+        tags = _with_inherent_tags(pick, tags)
         # 词条 / 重试次数校验（backend-ct-pick-tags §2.1）：客户端已拦截但不可信任
         error = _validate_pick_tags(
             pick,

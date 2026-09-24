@@ -413,3 +413,35 @@ def test_non_inherent_tag_still_rejected_for_glitchless_pick(world) -> None:  # 
         _select(ws_r, "ML1", ["Pinch"], retry=None)
         err = _recv_until(ws_r, lambda m: m["type"] == "error" and m["code"] == 400)
         assert "tag" in err["msg"].lower()
+
+
+def test_inherent_glitchless_server_side_fallback(world) -> None:  # type: ignore[no-untyped-def]
+    """裁判端未附带固有词条时，服务端兜底并入（降级手动选图 / 旧客户端）。"""
+    client, db, session, _ = world
+    _match_with_glitchless(db, session, "ML1")
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
+    with (
+        client.websocket_connect(f"/ws/{tok_r}") as ws_r,
+        client.websocket_connect(f"/ws/{tok_a}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        rs = _drive_to_round_start(ws_r, ws_a, "ML1")  # 不带 tags
+        assert rs["pick"]["tags"] == ["Glitchless"]
+
+
+def test_inherent_glitchless_dedup_for_cp(world) -> None:  # type: ignore[no-untyped-def]
+    """CP 只提交 Checkpoint 时，服务端补上固有 Glitchless 且不重复。"""
+    client, db, session, _ = world
+    _match_with_glitchless(db, session, "CP01")
+    tok_r = issue_token(db.accounts.get(session.referee_id), settings)
+    tok_a = issue_token(db.accounts.get(session.player_a_id), settings)
+    with (
+        client.websocket_connect(f"/ws/{tok_r}") as ws_r,
+        client.websocket_connect(f"/ws/{tok_a}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        rs = _drive_to_round_start(ws_r, ws_a, "CP01", ["Checkpoint"])
+        assert rs["pick"]["tags"] == ["Checkpoint", "Glitchless"]
