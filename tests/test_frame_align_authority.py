@@ -75,6 +75,8 @@ def snapshot(cm, conn):
 
 
 def test_complete_anchor_and_fencing(scope, monkeypatch):
+    mono = module._align_now_ms()
+    monkeypatch.setattr(module, "_align_now_ms", lambda: mono)
     cm, (source, follower, _), _store = scope
     monkeypatch.setattr(module, "_now_ms", lambda: 1760000000000)
     assert publish(
@@ -156,6 +158,10 @@ async def test_timeout_freezes_without_electing_or_advancing(scope, monkeypatch)
     monkeypatch.setattr(module, "_now_ms", lambda: now)
     publish(cm, source, t_us=10000000)
     before = snapshot(cm, source)
+    mono = module._align_now_ms() + 6000
+    monkeypatch.setattr(module, "_align_now_ms", lambda: mono)
+    for conn in store.directors:
+        conn.align_lease.received_ms = mono
     now += 6000
     await cm._expire_align(source.account_id, source.match_id)
     a = snapshot(cm, source)
