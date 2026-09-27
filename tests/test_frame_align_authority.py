@@ -1,4 +1,4 @@
-"""Anchor validation remains independent of connection-order publisher election."""
+"""Anchor validation and lifecycle ownership with one console and many stages."""
 
 import json
 from typing import cast
@@ -9,7 +9,6 @@ import pytest
 from twilightcupbackend import connection_manager as module
 from twilightcupbackend.connection_manager import ConnectionManager
 from twilightcupbackend.datatypes import Seat
-from twilightcupbackend.protocol import FrameAlignStatus
 from twilightcupbackend.stores import Connection, MatchRegistry
 
 
@@ -26,34 +25,13 @@ def scope(world):
             "d",
             Seat.DIRECTOR,
             match.id,
-            align_client="console",
+            align_client="console" if i == 0 else "stage",
         )
-        for _ in range(3)
+        for i in range(3)
     ]
     for conn in pages:
         cm._add_director(store, conn)
         conn.auth_sent = True
-        now = module._align_now_ms()
-        conn.align_lease.status = FrameAlignStatus(
-            connection_id=conn.connection_id,
-            account_id=conn.account_id,
-            match_id=conn.match_id,
-            authority_epoch=0,
-            seq=0,
-            capability=True,
-            visibility="visible",
-            progress_t_us=0,
-            media_ready=True,
-            decode_ready=True,
-            state="running",
-            active_sides=["A", "B"],
-            waiting_sides=[],
-        )
-        conn.align_lease.received_ms = now
-        conn.align_lease.eligible_since_ms = now - 2001
-    st = cm._director_state[(pages[0].account_id, pages[0].match_id)]
-    cm._set_align_owner(st, pages[0], "test_ready")
-    st.takeover_deadline_ms = None
     return cm, pages, store
 
 
@@ -137,6 +115,12 @@ def test_complete_anchor_and_fencing(scope, monkeypatch):
         {"frozen": 1},
         {"match_id": "other"},
         {"account_id": "other"},
+        {"connection_id": "other"},
+        {"active_sides": ["A"]},
+        {"active_sides": ["A"], "waiting_sides": ["A"]},
+        {"active_sides": ["C"], "waiting_sides": ["B"]},
+        {"active_sides": "A", "waiting_sides": ["B"]},
+        {"active_sides": [{"side": "A"}], "waiting_sides": ["B"]},
         {"seq": True},
         {"epoch": None},
         {"scene": []},
@@ -150,26 +134,27 @@ def test_invalid_anchor_does_not_change_elected_owner(scope, extra):
     assert st.align_owner is source and st.align_anchor is None
 
 
-async def test_timeout_freezes_without_electing_or_advancing(scope, monkeypatch):
+async def test_silence_preserves_owner_and_disconnect_never_promotes_stage(
+    scope, monkeypatch
+):
     cm, (source, follower, _), store = scope
-    now = 1760000000000
-    monkeypatch.setattr(module, "_now_ms", lambda: now)
-    publish(cm, source, t_us=10000000)
-    before = snapshot(cm, source)
-    now += 6000
-    await cm._expire_align(source.account_id, source.match_id)
-    a = snapshot(cm, source)
-    assert a["t_us"] == 10000000 and a["frozen"] and a["stale"]
-    assert a["seq"] == 2 and a["epoch"] == before["epoch"]
-    assert not publish(cm, follower, t_us=20000000)[0]
-    assert publish(cm, source, t_us=11000000)[0]
-    assert not snapshot(cm, source)["frozen"]
+    mono, wall = [100000], [1760000000000]
+    monkeypatch.setattr(module, "_now_ms", lambda: wall[0])
+    monkeypatch.setattr(module, "_align_now_ms", lambda: mono[0])
+    assert publish(cm, source, t_us=10000000)[0]
+    st = cm._director_state[(source.account_id, source.match_id)]
+    before = dict(st.align_anchor)
+    for delta in (86400000, -172800000):
+        wall[0] += delta
+        mono[0] += 600000
+        await cm._expire_align(source.account_id, source.match_id)
+        assert st.align_owner is source and st.align_anchor == before
     cm._remove_connection(store, source)
     await cm._flush_align_notifications()
-    from tests.test_frame_align_lease import report
-
-    await report(cm, follower, 1, progress_t_us=12000000)
-    assert publish(cm, follower, t_us=12000000)[0]
+    assert st.align_owner is None
+    assert snapshot(cm, source)["src"] is None
+    assert snapshot(cm, source)["frozen"] and snapshot(cm, source)["stale"]
+    assert not publish(cm, follower, t_us=12000000)[0]
     assert not publish(cm, source, t_us=13000000)[0]
 
 
@@ -187,13 +172,15 @@ async def test_scope_isolation_and_failed_publisher_notice(scope):
     cm._add_director(other_store, other_match)
     other_match.auth_sent = True
     assert publish(cm, source, t_us=10000000)[0]
-    # The next oldest socket is dead: failure cleaning it up must promote third.
+    # Failed receivers are cleaned up without acquiring publisher authority.
     cast(AsyncMock, follower.websocket.send_text).side_effect = RuntimeError("closed")
     cm._remove_connection(store, source)
     await cm._flush_align_notifications()
     await cm._flush_align_notifications()
     st = cm._director_state[(source.account_id, source.match_id)]
-    assert st.align_owner is third
+    assert st.align_owner is None
+    assert not store.has_connection(follower)
+    assert store.has_connection(third)
     cast(AsyncMock, other.websocket.send_text).assert_not_called()
     cast(AsyncMock, other_match.websocket.send_text).assert_not_called()
     rows = [
@@ -201,7 +188,9 @@ async def test_scope_isolation_and_failed_publisher_notice(scope):
         for c in cast(AsyncMock, third.websocket.send_text).call_args_list
     ]
     assert any(
-        m.get("action") == "align_authority" and m["payload"]["role"] == "publisher"
+        m.get("action") == "align_authority"
+        and m["payload"]["role"] == "follower"
+        and m["payload"]["src"] is None
         for m in rows
     )
 

@@ -141,12 +141,6 @@ def _now_ms() -> int:
     return int(now_ts().timestamp() * 1000)
 
 
-# 帧级对齐静默阈值（毫秒）：超时只冻结；主连接离开才按连接顺序选下一位。
-_ALIGN_AUTHORITY_TIMEOUT_MS = 5_000
-_ALIGN_STABILITY_MS = 2_000
-_ALIGN_TAKEOVER_MS = 3_000
-
-
 def _align_now_ms() -> int:
     return time.monotonic_ns() // 1_000_000
 
@@ -168,27 +162,22 @@ class _DirectorState:
     # frame_align：导播帧级对齐权威虚拟时间 T（None=该场从未收到过 frame_align，
     # 否则不对外补发）。t_us 为 epoch 微秒，0 也是合法值（前端按未就绪兜底）；
     # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。该 key 的权威 src 由
-    # align_authority_src 持有（多舞台并存时唯一权威、其余忽略）；last_ms 为
-    # 最近一次被采纳（该权威）frame_align 的服务器毫秒，用于超时冻结判定。
+    # align_authority_src 持有；只有最新注册的 console 可发布，舞台只接收。
     frame_align_t_us: int | None = None
     frame_align_ready_a: bool = False
     frame_align_ready_b: bool = False
     align_authority_src: str | None = None
-    align_authority_last_ms: int | None = None
     align_owner: Connection | None = None
     align_epoch: int = 0
     align_seq: int = 0
     align_client_seq: int | None = None
     has_history: bool = False
-    lease_mode: bool = True
-    align_keepalive_ms: int = 0
     timeline_version: int = 0
     reset_state: dict[str, Any] | None = None
     reset_deadline_ms: int | None = None
     reset_requests: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = (
         field(default_factory=dict)
     )
-    takeover_deadline_ms: int | None = None
     align_anchor: dict[str, Any] | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -206,7 +195,7 @@ class ConnectionManager:
         self.settings = settings
         self.logger = logger or getLogger("ConnectionManager")
         # 后台任务（断连提示等）：保留引用避免被 GC，完成后自动丢弃。
-        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._background_tasks: set[asyncio.Task[object]] = set()
         self._align_notifications: set[asyncio.Task[None]] = set()
         self._director_order = 0
         # Wall-clock seed reduces cross-boot collisions; it is not durable fencing.
@@ -244,11 +233,11 @@ class ConnectionManager:
         requested_match 指定时（如裁判多标签页选某场），连到该比赛
         并校验账号是其成员；否则自动挑选该账号最新一场（兼容选手/导播）。
         capabilities 为 ``?cap=`` 逗号分隔的能力声明（如 ``preload1``）。
-        align_client 仅 console/stage；缺失为只接收，console 也须通过租约就绪检查。
+        align_client 仅 console/stage；缺失为只接收，最新 console 注册即获权。
         exclusive 为真时要求独占身份 key（账号+座位+比赛）：同 key 既有连接
         （无论对方是否 exclusive）先收 displaced 再被 close(4001) 顶掉；
-        key 含 match，故裁判不同场多标签、多角色多座位、导播不带 exclusive 的
-        OBS 多源并存均不受影响。
+        DIRECTOR 单独处理：console 默认独占同账号同比赛的 console，
+        stage/未声明用途忽略 exclusive，始终保留所有接收连接。
         """
         account_id, error = self._authenticate(token)
         if error is not None or account_id is None:
@@ -300,189 +289,222 @@ class ConnectionManager:
                 c.strip() for c in (capabilities or "").split(",") if c.strip()
             ),
         )
-        # exclusive 接管的临界区：注销同 key 旧连接 + 注册新连接之间无 await，
-        # 保证原子完成；旧连接自注销一刻起，其在途消息一律被 handle 忽略。
+
+        async def send_auth() -> None:
+            st = self._director_state.get((conn.account_id, conn.match_id))
+            auth_epoch = st.align_epoch if st is not None else 0
+            await self._send(
+                conn,
+                SrvAuthOk(
+                    connection_id=conn.connection_id if seat == Seat.DIRECTOR else None,
+                    align_role=(
+                        "publisher" if st and st.align_owner is conn else "follower"
+                    )
+                    if seat == Seat.DIRECTOR
+                    else None,
+                    align_authority_src=st.align_authority_src if st else None,
+                    authority_epoch=auth_epoch if seat == Seat.DIRECTOR else None,
+                    align_lease_required=False,
+                    timeline_version=st.timeline_version if st else 0,
+                    account_id=account.id,
+                    display_name=account.display_name,
+                    seat=seat.name,
+                    match_id=match.id,
+                    match_name=match.name,
+                    player_a_name=self._display_name_of(match.player_a_id),
+                    player_b_name=self._display_name_of(match.player_b_id),
+                ),
+            )
+            conn.auth_sent = True
+            conn.authority_epoch_seen = auth_epoch
+
         displaced: list[Connection] = []
-        if exclusive:
-            displaced = store.same_key_connections(account.id, seat)
-            for old in displaced:
-                self._remove_connection(store, old)
-        # 同座位重连：导播允许多连接并存（网页+OBS 等）；选手/裁判替换旧连接
         legacy: Connection | None = None
         if seat == Seat.DIRECTOR:
-            self._add_director(store, conn)
+            st = self._director_state.setdefault(
+                (conn.account_id, conn.match_id), _DirectorState()
+            )
+            # Serialize registration/auth with frame/reset handlers. The registry
+            # swap contains no await: old in-flight commands lose their identity.
+            async with st.align_lock:
+                displaced = self._add_director(store, conn)
+                try:
+                    await send_auth()
+                    await self._announce_authority(conn.account_id, conn.match_id, st)
+                    if displaced and st.align_anchor is not None:
+                        await self._broadcast_align_scope(
+                            conn.account_id, conn.match_id
+                        )
+                except BaseException:
+                    self._remove_connection(store, conn)
+                    for old in displaced:
+                        await self._displace(old)
+                    raise
         else:
+            if exclusive:
+                displaced = store.same_key_connections(account.id, seat)
+                for old in displaced:
+                    self._remove_connection(store, old)
             previous = store.connections.get(seat)
             store.connections[seat] = conn
-            # 非 exclusive（或裁判改派后不同账号）的旧语义：静默替换旧连接
             if previous is not None and previous not in displaced:
                 legacy = previous
-        # 顶掉旧连接：displaced 先于关闭帧送达，前端凭其或 close 码 4001 判定
-        for old in displaced:
-            await self._displace(old)
-        if legacy is not None:
-            await self._safe_close(legacy.websocket)
-
-        st = self._director_state.get((conn.account_id, conn.match_id))
-        auth_epoch = st.align_epoch if st is not None else 0
-        await self._send(
-            conn,
-            SrvAuthOk(
-                connection_id=conn.connection_id if seat == Seat.DIRECTOR else None,
-                align_role=(
-                    "publisher" if st and st.align_owner is conn else "follower"
-                )
-                if seat == Seat.DIRECTOR
-                else None,
-                align_authority_src=st.align_authority_src if st else None,
-                authority_epoch=auth_epoch if seat == Seat.DIRECTOR else None,
-                align_lease_required=st.lease_mode if st else False,
-                timeline_version=st.timeline_version if st else 0,
-                account_id=account.id,
-                display_name=account.display_name,
-                seat=seat.name,
-                match_id=match.id,
-                match_name=match.name,
-                player_a_name=self._display_name_of(match.player_a_id),
-                player_b_name=self._display_name_of(match.player_b_id),
-            ),
-        )
-        conn.auth_sent = True
-        conn.authority_epoch_seen = auth_epoch
-        await self._send(
-            conn, SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready)
-        )
-        await self._send(conn, SrvPhaseChange(phase=store.phase))
-        # 补发当前 ban/pick 草稿状态（新连导播立即拿到进度）
-        if store.draft_state is not None:
-            await self._send(conn, SrvDraftState(state=store.draft_state))
-        # PREP 阶段补发选图预览与预载状态快照（断线重连的选手端恢复预载）：
-        # pick_announced 补发选手席（含专属 System 提示）与导播席（下方
-        # DIRECTOR 分支，各阶段均补）；preload_state 对所有席位补发（重连端
-        # 消除陈旧态）。其他阶段选手席不补（round_start 本就不重放，预载在
-        # COUNTDOWN/IN_ROUND 已无意义）。
-        if store.phase == MatchPhase.PREP:
-            is_player = seat in (Seat.PLAYER_A, Seat.PLAYER_B)
-            if is_player and store.pick_announced is not None:
-                await self._send(conn, store.pick_announced)
-                # 当前选图同步一条定向 System 提示（仅该选手可见、不落库；
-                # 文案与 pick.selected 同构，取自冻结快照，含词条/重试）
-                pick = store.pick_announced.pick
-                tags_suffix = f" [{', '.join(pick.tags)}]" if pick.tags else ""
-                retry_suffix = (
-                    f" x{pick.retry_count}" if pick.retry_count is not None else ""
-                )
-                await self._send(
-                    conn,
-                    SrvSystem(
-                        text=self.tr(
-                            store.id,
-                            "pick.current_hint",
-                            code=store.pick_announced.pick_code,
-                            name=pick.name,
-                            tags=tags_suffix,
-                            retry=retry_suffix,
+            await send_auth()
+        try:
+            for old in displaced:
+                await self._displace(old)
+            if legacy is not None:
+                await self._safe_close(legacy.websocket)
+            if not store.has_connection(conn):
+                return None
+            await self._send(
+                conn, SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready)
+            )
+            await self._send(conn, SrvPhaseChange(phase=store.phase))
+            # 补发当前 ban/pick 草稿状态（新连导播立即拿到进度）
+            if store.draft_state is not None:
+                await self._send(conn, SrvDraftState(state=store.draft_state))
+            # PREP 阶段补发选图预览与预载状态快照（断线重连的选手端恢复预载）：
+            # pick_announced 补发选手席（含专属 System 提示）与导播席（下方
+            # DIRECTOR 分支，各阶段均补）；preload_state 对所有席位补发（重连端
+            # 消除陈旧态）。其他阶段选手席不补（round_start 本就不重放，预载在
+            # COUNTDOWN/IN_ROUND 已无意义）。
+            if store.phase == MatchPhase.PREP:
+                is_player = seat in (Seat.PLAYER_A, Seat.PLAYER_B)
+                if is_player and store.pick_announced is not None:
+                    await self._send(conn, store.pick_announced)
+                    # 当前选图同步一条定向 System 提示（仅该选手可见、不落库；
+                    # 文案与 pick.selected 同构，取自冻结快照，含词条/重试）
+                    pick = store.pick_announced.pick
+                    tags_suffix = f" [{', '.join(pick.tags)}]" if pick.tags else ""
+                    retry_suffix = (
+                        f" x{pick.retry_count}" if pick.retry_count is not None else ""
+                    )
+                    await self._send(
+                        conn,
+                        SrvSystem(
+                            text=self.tr(
+                                store.id,
+                                "pick.current_hint",
+                                code=store.pick_announced.pick_code,
+                                name=pick.name,
+                                tags=tags_suffix,
+                                retry=retry_suffix,
+                            ),
+                            kind="pick",
+                            sender="System",
                         ),
-                        kind="pick",
-                        sender="System",
-                    ),
-                )
-            await self._send(
-                conn,
-                SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
-            )
-            # 连入时比赛已在 PREP（重连/中途加入）：没有 live 的 prep.started
-            # 广播可看，定向补一条仅该选手可见的 System 提示（不广播、不落库）。
-            # 该席已就绪则不提示（再 !ready 会取消就绪，提示反而误导）。
-            already_ready = store.a_ready if seat == Seat.PLAYER_A else store.b_ready
-            if is_player and not already_ready:
+                    )
                 await self._send(
                     conn,
-                    SrvSystem(
-                        text=self.tr(store.id, "prep.hint"),
-                        kind="prep",
-                        sender="System",
+                    SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+                )
+                # 连入时比赛已在 PREP（重连/中途加入）：没有 live 的 prep.started
+                # 广播可看，定向补一条仅该选手可见的 System 提示（不广播、不落库）。
+                # 该席已就绪则不提示（再 !ready 会取消就绪，提示反而误导）。
+                already_ready = (
+                    store.a_ready if seat == Seat.PLAYER_A else store.b_ready
+                )
+                if is_player and not already_ready:
+                    await self._send(
+                        conn,
+                        SrvSystem(
+                            text=self.tr(store.id, "prep.hint"),
+                            kind="prep",
+                            sender="System",
+                        ),
+                    )
+            # 初始化序列末尾给新连接补发全量在线状态（重连方消除陈旧离线态）
+            for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+                await self._send(
+                    conn,
+                    SrvSeatState(
+                        seat=player_seat.name, online=player_seat in store.connections
                     ),
                 )
-        # 初始化序列末尾给新连接补发全量在线状态（重连方消除陈旧离线态）
-        for player_seat in (Seat.PLAYER_A, Seat.PLAYER_B):
-            await self._send(
-                conn,
-                SrvSeatState(
-                    seat=player_seat.name, online=player_seat in store.connections
-                ),
-            )
-        # 回合中裁判/导播晚连/重连：补发双方最近一次实时计时（每秒上报、按席
-        # 暂存；overlay 晚开也能立即对齐计时显示）。选手席不补（互不感知对手进度）。
-        if (
-            store.phase == MatchPhase.IN_ROUND
-            and seat in (Seat.REFEREE, Seat.DIRECTOR)
-            and store.live_times
-        ):
-            for live in store.live_times.values():
-                await self._send(conn, live)
-        # 裁判/导播连入（含晚连）补发双方最近一次 UTC 时间戳；选手席不补。
-        # 该遥测连接期间持续上报，不限于回合内，故不受 phase 条件限制。
-        if seat in (Seat.REFEREE, Seat.DIRECTOR) and store.utc_timestamps:
-            for player_seat, utc_ms in store.utc_timestamps.items():
-                await self._send(
-                    conn, SrvUtcTimestamp(seat=player_seat.name, utc_ms=utc_ms)
-                )
-        # 座席在线状态广播（backend-seat-presence）：选手连入通知全员——
-        # 系统提示连本人也发（system 消息 = Twilight 前缀，各端必须逐字一致，
-        # 不排除任何在席连接）；seat_state 广播仍排除本人（上方已补发全量
-        # 快照，避免重复 UI 事件）
-        if seat in (Seat.PLAYER_A, Seat.PLAYER_B):
-            await self.broadcast_match(
-                store.id,
-                SrvSeatState(seat=seat.name, online=True),
-                exclude=conn,
-            )
-            await self.system_message(
-                store.id,
-                self.tr(
+            # 回合中裁判/导播晚连/重连：补发双方最近一次实时计时（每秒上报、按席
+            # 暂存；overlay 晚开也能立即对齐计时显示）。选手席不补（互不感知对手进度）。
+            if (
+                store.phase == MatchPhase.IN_ROUND
+                and seat in (Seat.REFEREE, Seat.DIRECTOR)
+                and store.live_times
+            ):
+                for live in store.live_times.values():
+                    await self._send(conn, live)
+            # 裁判/导播连入（含晚连）补发双方最近一次 UTC 时间戳；选手席不补。
+            # 该遥测连接期间持续上报，不限于回合内，故不受 phase 条件限制。
+            if seat in (Seat.REFEREE, Seat.DIRECTOR) and store.utc_timestamps:
+                for player_seat, utc_ms in store.utc_timestamps.items():
+                    await self._send(
+                        conn, SrvUtcTimestamp(seat=player_seat.name, utc_ms=utc_ms)
+                    )
+            # 座席在线状态广播（backend-seat-presence）：选手连入通知全员——
+            # 系统提示连本人也发（system 消息 = Twilight 前缀，各端必须逐字一致，
+            # 不排除任何在席连接）；seat_state 广播仍排除本人（上方已补发全量
+            # 快照，避免重复 UI 事件）
+            if seat in (Seat.PLAYER_A, Seat.PLAYER_B):
+                await self.broadcast_match(
                     store.id,
-                    "seat.online",
-                    name=conn.display_name,
-                    seat=seat.name,
-                ),
-                kind="seat",
-            )
-        # 导播状态回放：补发该 (account_id, match_id) 最近一次的场景/倒计时/
-        # 直播配置，舞台晚于控制台打开也能对齐，无需控制台再点一次。
-        # 仅 DIRECTOR 席、有暂存才发；选手/裁判永不收到。
-        if seat == Seat.DIRECTOR:
-            await self._expire_align(conn.account_id, store.id)
-            st = self._director_state.get((conn.account_id, store.id))
-            if st is not None:
-                async with st.align_lock:
-                    replay = self._director_state_payload(conn.account_id, store.id)
-                    if conn.authority_epoch_seen != st.align_epoch:
-                        await self._send_authority(conn, st)
-                    if replay is not None:
-                        replay["align_role"] = (
-                            "publisher" if st.align_owner is conn else "follower"
-                        )
-                        replay["connection_id"] = conn.connection_id
-                        await self._send(
-                            conn,
-                            SrvDirectorCommand(action="state_sync", payload=replay),
-                        )
-            # 补发当前选图预览（若已宣布）：导播 categoryinfo 场景晚开也能立即
-            # 对齐当前项目。pick_announced 自 select_pick 起留存到下一次
-            # begin_prep 才清空，覆盖 PREP/倒计时/回合中各阶段（选手席的
-            # PREP 补发见上方分支，含专属 System 提示，口径不同勿合并）。
-            if store.pick_announced is not None:
-                await self._send(conn, store.pick_announced)
-        self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
-        return conn
+                    SrvSeatState(seat=seat.name, online=True),
+                    exclude=conn,
+                )
+                await self.system_message(
+                    store.id,
+                    self.tr(
+                        store.id,
+                        "seat.online",
+                        name=conn.display_name,
+                        seat=seat.name,
+                    ),
+                    kind="seat",
+                )
+            # 导播状态回放：补发该 (account_id, match_id) 最近一次的场景/倒计时/
+            # 直播配置，舞台晚于控制台打开也能对齐，无需控制台再点一次。
+            # 仅 DIRECTOR 席、有暂存才发；选手/裁判永不收到。
+            if seat == Seat.DIRECTOR:
+                await self._expire_align(conn.account_id, store.id)
+                st = self._director_state.get((conn.account_id, store.id))
+                if st is not None:
+                    async with st.align_lock:
+                        if not store.has_connection(conn):
+                            return None
+                        replay = self._director_state_payload(conn.account_id, store.id)
+                        if conn.authority_epoch_seen != st.align_epoch:
+                            await self._send_authority(conn, st)
+                        if replay is not None:
+                            replay["align_role"] = (
+                                "publisher" if st.align_owner is conn else "follower"
+                            )
+                            replay["connection_id"] = conn.connection_id
+                            await self._send(
+                                conn,
+                                SrvDirectorCommand(action="state_sync", payload=replay),
+                            )
+                # 补发当前选图预览（若已宣布）：导播 categoryinfo 场景晚开也能立即
+                # 对齐当前项目。pick_announced 自 select_pick 起留存到下一次
+                # begin_prep 才清空，覆盖 PREP/倒计时/回合中各阶段（选手席的
+                # PREP 补发见上方分支，含专属 System 提示，口径不同勿合并）。
+                if store.pick_announced is not None:
+                    await self._send(conn, store.pick_announced)
+            self.logger.info("Seat %s connected to match %s.", seat.name, match.id)
+            return conn
+        except BaseException:
+            # No endpoint receive loop exists yet to run its disconnect finally.
+            # A failed initialization must not leave a permanent console owner.
+            await self.disconnect(conn)
+            raise
 
     async def disconnect(self, conn: Connection) -> None:
         store = self.registry.get(conn.match_id)
         if store is None:
             return
         was_current = store.connections.get(conn.seat) is conn
-        self._remove_connection(store, conn)
+        if conn.seat == Seat.DIRECTOR:
+            st = self._director_state[(conn.account_id, conn.match_id)]
+            async with st.align_lock:
+                self._remove_connection(store, conn)
+        else:
+            self._remove_connection(store, conn)
         if was_current:
             await self._broadcast_seat_state(store, conn.seat)
             # 仅真正离线时发系统提示；被同座位新连接替换（顶号重连）不提示，
@@ -514,61 +536,43 @@ class ConnectionManager:
         self._authority_epoch += 1
         return self._authority_epoch
 
-    def _add_director(self, store: MatchStore, conn: Connection) -> None:
-        # Registration never elects a publisher: a console must first prove readiness.
+    def _add_director(self, store: MatchStore, conn: Connection) -> list[Connection]:
+        """Atomic registry swap; live registration holds the scope lock."""
         self._director_order += 1
         conn.director_order = self._director_order
-        store.directors.add(conn)
         st = self._director_state.setdefault(
             (conn.account_id, store.id), _DirectorState()
         )
-        if st.align_epoch == 0:
+        displaced = []
+        if conn.align_client == "console":
+            displaced = [
+                old
+                for old in store.directors
+                if old.account_id == conn.account_id and old.align_client == "console"
+            ]
+            for old in displaced:
+                store.directors.discard(old)
+        store.directors.add(conn)
+        if conn.align_client == "console":
+            self._set_align_owner(st, conn, "console_registered")
+        elif st.align_epoch == 0:
             st.align_epoch = self._next_authority_epoch()
-
-    def _select_oldest(
-        self, store: MatchStore, account_id: str, st: _DirectorState
-    ) -> None:
-        candidates = [c for c in store.directors if c.account_id == account_id]
-        now = _align_now_ms()
-        candidates = [c for c in candidates if self._lease_candidate(c, now)]
-        owner = (
-            min(
-                candidates,
-                key=lambda c: (
-                    not (
-                        st.lease_mode
-                        and c.align_lease.status
-                        and c.align_lease.status.visibility == "visible"
-                        and now - c.align_lease.progressed_ms
-                        <= _ALIGN_AUTHORITY_TIMEOUT_MS
-                    ),
-                    c.director_order,
-                ),
-            )
-            if candidates
-            else None
-        )
-        self._set_align_owner(st, owner, "connection_change")
+        return displaced
 
     def _set_align_owner(
         self, st: _DirectorState, owner: Connection | None, reason: str
     ) -> None:
-        if owner is not None and not self._lease_candidate(owner, _align_now_ms()):
-            owner = None
         if st.align_owner is owner:
             return
         previous = st.align_owner
         if st.reset_state and st.reset_state["status"] == "preparing":
             self._finish_align_reset(st, "failed", "OWNER_LOST")
         st.align_owner = owner
-        st.takeover_deadline_ms = (
-            _align_now_ms() + _ALIGN_TAKEOVER_MS if st.lease_mode and owner else None
-        )
+        st.frame_align_ready_a = st.frame_align_ready_b = False
         st.align_authority_src = owner.connection_id if owner else None
         st.align_epoch = self._next_authority_epoch()
         st.align_seq = 0
         st.align_client_seq = None
-        st.align_authority_last_ms = None
         if st.align_anchor is not None:
             now = _now_ms()
             st.align_anchor = {
@@ -582,6 +586,7 @@ class ConnectionManager:
                 "stale": True,
                 "ready_a": False,
                 "ready_b": False,
+                "reset": st.reset_state,
                 "effective_at_ms": now,
                 "server_time_ms": now,
                 "server_now_ms": now,
@@ -613,9 +618,7 @@ class ConnectionManager:
                     "role": "publisher" if st.align_owner is conn else "follower",
                     "account_id": conn.account_id,
                     "match_id": conn.match_id,
-                    "lease_required": st.lease_mode,
-                    "lease_timeout_ms": _ALIGN_AUTHORITY_TIMEOUT_MS,
-                    "takeover_timeout_ms": _ALIGN_TAKEOVER_MS,
+                    "lease_required": False,
                     "t_floor_us": st.frame_align_t_us,
                     "timeline_version": st.timeline_version,
                     "reset": st.reset_state,
@@ -661,7 +664,7 @@ class ConnectionManager:
             store.directors.discard(conn)
             st = self._director_state.get((conn.account_id, conn.match_id))
             if st is not None and st.align_owner is conn:
-                self._select_oldest(store, conn.account_id, st)
+                self._set_align_owner(st, None, "connection_closed")
                 task = asyncio.create_task(
                     self._notify_election(
                         conn.account_id, conn.match_id, st.align_epoch
@@ -812,6 +815,12 @@ class ConnectionManager:
                         (conn.account_id, conn.match_id), _DirectorState()
                     )
                     async with st.align_lock:
+                        # It may have been displaced while waiting for this lock.
+                        current_store = self.registry.get(conn.match_id)
+                        if current_store is None or not current_store.has_connection(
+                            conn
+                        ):
+                            return
                         if act in ("frame_align_reset", "frame_align_reset_ack"):
                             await self._handle_align_reset(conn, st, act, pl)
                             return
@@ -1075,7 +1084,12 @@ class ConnectionManager:
                 self.logger.debug("广播发送失败，清理该连接。", exc_info=True)
         # 清理半开/已断连接，避免导播多连接场景下累积垃圾
         for conn in dead:
-            self._remove_connection(store, conn)
+            if conn.seat == Seat.DIRECTOR:
+                st = self._director_state[(conn.account_id, conn.match_id)]
+                async with st.align_lock:
+                    self._remove_connection(store, conn)
+            else:
+                self._remove_connection(store, conn)
 
     def _update_director_state(
         self,
@@ -1165,27 +1179,11 @@ class ConnectionManager:
             )
         ):
             return False, False
-        if st.lease_mode:
-            lease = conn.align_lease
-            status = lease.status
-            if (
-                status is None
-                or not status.capability
-                or not status.media_ready
-                or not status.decode_ready
-                or status.state != "running"
-                or _align_now_ms() - lease.received_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
-                or st.takeover_deadline_ms is not None
-                or "seq" not in payload
-                or payload.get("epoch", payload.get("authority_epoch"))
-                != st.align_epoch
-            ):
-                return False, False
-            payload = {
-                **payload,
-                "active_sides": status.active_sides,
-                "waiting_sides": status.waiting_sides,
-            }
+        if (
+            "seq" not in payload
+            or payload.get("epoch", payload.get("authority_epoch")) != st.align_epoch
+        ):
+            return False, False
         src = conn.connection_id
         t = payload.get("t_us")
         rate = payload.get("rate", 1.0)
@@ -1202,8 +1200,22 @@ class ConnectionManager:
         for key in ("paused", "frozen", "ready_a", "ready_b"):
             if key in payload and type(payload[key]) is not bool:
                 return False, False
-        for key, expected in (("account_id", account_id), ("match_id", match_id)):
+        for key, expected in (
+            ("connection_id", conn.connection_id),
+            ("account_id", account_id),
+            ("match_id", match_id),
+        ):
             if key in payload and payload[key] != expected:
+                return False, False
+        # Status is optional, so validate the publisher's side metadata here.
+        if "active_sides" in payload or "waiting_sides" in payload:
+            active, waiting = payload.get("active_sides"), payload.get("waiting_sides")
+            if (
+                not isinstance(active, list)
+                or not isinstance(waiting, list)
+                or any(side not in ("A", "B") for side in active + waiting)
+                or sorted(active + waiting) != ["A", "B"]
+            ):
                 return False, False
         for key in ("epoch", "authority_epoch"):
             if key in payload and (
@@ -1249,7 +1261,6 @@ class ConnectionManager:
             st.align_client_seq = None
         st.align_authority_src = src
         st.align_owner = conn
-        st.align_authority_last_ms = now
         st.align_client_seq = seq
         st.align_seq += 1
         st.frame_align_t_us = t
@@ -1285,38 +1296,6 @@ class ConnectionManager:
         # server timestamps, never by comparing browser/server wall clocks.
         now = _now_ms()
         return {**(st.align_anchor or {}), "server_time_ms": now, "server_now_ms": now}
-
-    def _freeze_align(
-        self, st: _DirectorState, reason: str = "publisher_silent"
-    ) -> bool:
-        a = st.align_anchor
-        if a is None or a.get("stale"):
-            return False
-        now = _now_ms()
-        # The backend never advances T: freeze exactly the last publisher value.
-        self.logger.info(
-            "Frame freeze epoch=%s source=%s reason=%s",
-            st.align_epoch,
-            st.align_authority_src,
-            reason,
-        )
-        st.align_seq += 1
-        st.frame_align_t_us = a["t_us"]
-        st.frame_align_ready_a = st.frame_align_ready_b = False
-        st.align_anchor = {
-            **a,
-            "t_us": st.frame_align_t_us,
-            "seq": st.align_seq,
-            "frozen": True,
-            "stale": True,
-            "reason": reason,
-            "ready_a": False,
-            "ready_b": False,
-            "effective_at_ms": now,
-            "server_time_ms": now,
-            "server_now_ms": now,
-        }
-        return True
 
     async def _broadcast_align_scope(self, account_id: str, match_id: str) -> None:
         st = self._director_state[(account_id, match_id)]
@@ -1387,7 +1366,6 @@ class ConnectionManager:
         st.align_seq += 1
         if presented_t_us is not None:
             st.frame_align_t_us = presented_t_us
-            st.align_authority_last_ms = now
         st.frame_align_ready_a = st.frame_align_ready_b = False
         if st.align_anchor is not None:
             active = st.align_anchor.get("active_sides", [])
@@ -1429,16 +1407,6 @@ class ConnectionManager:
             or conn.seat != Seat.DIRECTOR
         ):
             await self._reset_reply(conn, st, request_id, "NOT_AUTHORITY")
-            return
-        if (
-            status is None
-            or not status.capability
-            or status.state == "relinquish"
-            or _align_now_ms() - conn.align_lease.received_ms
-            > _ALIGN_AUTHORITY_TIMEOUT_MS
-            or st.takeover_deadline_ms is not None
-        ):
-            await self._reset_reply(conn, st, request_id, "LEASE_INVALID")
             return
         try:
             msg = (
@@ -1506,18 +1474,20 @@ class ConnectionManager:
                 if (
                     t is None
                     or msg.reason is not None
-                    or not status.decode_ready
-                    or not status.media_ready
-                    or not status.active_sides
-                    or status.state != "running"
-                    or status.timeline_version != st.timeline_version
-                    or status.authority_epoch != st.align_epoch
                     or not reset["target_t_us"] <= t <= reset["target_t_us"] + 1_000_000
-                    or status.progress_t_us < t
                 ):
                     await self._reset_reply(conn, st, request_id, "NOT_PRESENTED")
                     return
-                if st.align_anchor is not None:
+                if (
+                    st.align_anchor is not None
+                    and status is not None
+                    and status.timeline_version == st.timeline_version
+                    and status.authority_epoch == st.align_epoch
+                    and status.media_ready
+                    and status.decode_ready
+                    and status.state == "running"
+                    and status.progress_t_us >= t
+                ):
                     st.align_anchor.update(
                         active_sides=status.active_sides,
                         waiting_sides=status.waiting_sides,
@@ -1538,7 +1508,6 @@ class ConnectionManager:
         st.align_client_seq = None
         st.frame_align_t_us = msg.target_t_us
         st.frame_align_ready_a = st.frame_align_ready_b = False
-        st.align_authority_last_ms = None
         st.reset_deadline_ms = _align_now_ms() + 10_000
         st.reset_state = {
             "request_id": msg.request_id,
@@ -1558,26 +1527,6 @@ class ConnectionManager:
         st.reset_requests[key] = (msg.model_dump(), dict(st.reset_state))
         if len(st.reset_requests) > 128:
             del st.reset_requests[next(iter(st.reset_requests))]
-        for page in store.directors:
-            if page.account_id != conn.account_id:
-                continue
-            page.align_lease.eligible_since_ms = None
-            page.align_lease.progressed_ms = 0
-            if page is conn:
-                page.align_lease.status = status.model_copy(
-                    update={
-                        "timeline_version": st.timeline_version,
-                        "authority_epoch": st.align_epoch,
-                        "progress_t_us": 0,
-                        "media_ready": False,
-                        "decode_ready": False,
-                        "state": "media_wait",
-                        "active_sides": [],
-                        "waiting_sides": ["A", "B"],
-                    }
-                )
-            else:
-                page.align_lease.status = None
         st.align_anchor = {
             **(st.align_anchor or {}),
             "src": conn.connection_id,
@@ -1607,24 +1556,6 @@ class ConnectionManager:
         await self._announce_authority(conn.account_id, conn.match_id, st)
         await self._broadcast_align_scope(conn.account_id, conn.match_id)
 
-    def _lease_candidate(self, conn: Connection, now: int) -> bool:
-        lease = conn.align_lease
-        status = lease.status
-        return bool(
-            conn.seat == Seat.DIRECTOR
-            and conn.align_client == "console"
-            and status
-            and status.capability
-            and status.media_ready
-            and status.decode_ready
-            and status.state == "running"
-            and status.active_sides
-            and not lease.blocked
-            and now - lease.received_ms <= _ALIGN_AUTHORITY_TIMEOUT_MS
-            and lease.eligible_since_ms is not None
-            and now - lease.eligible_since_ms >= _ALIGN_STABILITY_MS
-        )
-
     async def _receive_align_status(
         self, conn: Connection, st: _DirectorState, payload: dict[str, Any]
     ) -> None:
@@ -1650,137 +1581,10 @@ class ConnectionManager:
             or sorted(sides) != ["A", "B"]
         ):
             return
-        # Expiry wins over a late renewal, even between watchdog ticks.
-        if st.lease_mode:
-            await self._reconcile_align_lease(conn.account_id, conn.match_id, st)
-            if status.authority_epoch != st.align_epoch:
-                return
-        now = _align_now_ms()
-        previous = lease.status
-        fresh = (
-            previous is not None
-            and now - lease.received_ms <= _ALIGN_AUTHORITY_TIMEOUT_MS
-        )
-        ready = (
-            status.capability
-            and status.media_ready
-            and status.decode_ready
-            and status.state == "running"
-            and bool(status.active_sides)
-        )
-        if previous is not None and status.progress_t_us > previous.progress_t_us:
-            lease.progressed_ms = now
-        if not ready:
-            lease.eligible_since_ms = None
-        elif not fresh or lease.eligible_since_ms is None or lease.blocked:
-            lease.eligible_since_ms = now
-        lease.blocked = False
+        # Compatibility-only diagnostics. Readiness, visibility and silence do
+        # not grant, revoke or renew ownership and never generate an anchor.
         lease.status = status
-        lease.received_ms = now
-        if (
-            st.align_owner is conn
-            and ready
-            and st.takeover_deadline_ms is not None
-            and status.progress_t_us >= (st.frame_align_t_us or 0)
-        ):
-            # Only a report acknowledging the new epoch confirms takeover readiness.
-            st.takeover_deadline_ms = None
-        await self._reconcile_align_lease(conn.account_id, conn.match_id, st)
-
-    async def _reconcile_align_lease(
-        self, account_id: str, match_id: str, st: _DirectorState
-    ) -> None:
-        store = self.registry.get(match_id)
-        if store is None:
-            return
-        now = _align_now_ms()
-        owner = st.align_owner
-        status = owner.align_lease.status if owner else None
-        reason = "no_candidate"
-        replace = owner is None
-        reset_hold = bool(
-            st.reset_state
-            and st.reset_state["status"] != "completed"
-            and owner
-            and st.reset_state["owner_id"] == owner.connection_id
-        )
-        if owner is not None:
-            if (
-                status is None
-                or now - owner.align_lease.received_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
-            ):
-                reason, replace = "lease_expired", True
-            elif not status.capability or status.state == "relinquish":
-                reason, replace = "publisher_declined", True
-            elif st.takeover_deadline_ms is not None and now > st.takeover_deadline_ms:
-                reason, replace = "takeover_timeout", True
-            elif st.takeover_deadline_ms is None and (
-                reset_hold
-                or status.state != "running"
-                or not status.media_ready
-                or not status.decode_ready
-            ):
-                reason = (
-                    "reset_" + st.reset_state["status"]
-                    if reset_hold and st.reset_state
-                    else "paused"
-                    if status.state == "paused"
-                    else "media_wait"
-                )
-                if st.align_anchor is not None:
-                    changed = (
-                        not st.align_anchor.get("frozen")
-                        or st.align_anchor.get("reason") != reason
-                        or st.align_anchor.get("active_sides") != status.active_sides
-                        or st.align_anchor.get("waiting_sides") != status.waiting_sides
-                    )
-                    if changed or now - st.align_keepalive_ms >= 750:
-                        st.align_anchor["stale"] = False
-                        self._freeze_align(st, reason)
-                        st.align_anchor.update(
-                            reason=reason,
-                            stale=False,
-                            active_sides=status.active_sides,
-                            waiting_sides=status.waiting_sides,
-                        )
-                        self.logger.info(
-                            "Frame freeze account=%s match=%s reason=%s",
-                            account_id,
-                            match_id,
-                            reason,
-                        )
-                        st.align_keepalive_ms = now
-                        await self._broadcast_align_scope(account_id, match_id)
-        if replace:
-            if owner is not None:
-                owner.align_lease.blocked = True
-                owner.align_lease.eligible_since_ms = None
-            candidates = [
-                c
-                for c in store.directors
-                if c.account_id == account_id and self._lease_candidate(c, now)
-            ]
-            selected = (
-                min(
-                    candidates,
-                    key=lambda c: (
-                        not (
-                            c.align_lease.status
-                            and c.align_lease.status.visibility == "visible"
-                            and now - c.align_lease.progressed_ms
-                            <= _ALIGN_AUTHORITY_TIMEOUT_MS
-                        ),
-                        c.director_order,
-                    ),
-                )
-                if candidates
-                else None
-            )
-            if selected is not owner:
-                self._set_align_owner(st, selected, reason)
-                await self._announce_authority(account_id, match_id, st)
-                if st.align_anchor is not None:
-                    await self._broadcast_align_scope(account_id, match_id)
+        lease.received_ms = _align_now_ms()
 
     async def _expire_align(self, account_id: str, match_id: str) -> None:
         st = self._director_state.get((account_id, match_id))
@@ -1793,24 +1597,9 @@ class ConnectionManager:
             ):
                 self._finish_align_reset(st, "failed", "PREPARE_TIMEOUT")
                 await self._broadcast_align_scope(account_id, match_id)
-            if st.lease_mode:
-                await self._reconcile_align_lease(account_id, match_id, st)
-            status = st.align_owner.align_lease.status if st.align_owner else None
-            media_wait = status is not None and (
-                status.state in ("media_wait", "paused")
-                or not status.media_ready
-                or not status.decode_ready
-            )
-            if (
-                st.align_authority_last_ms is not None
-                and not media_wait
-                and _now_ms() - st.align_authority_last_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
-                and self._freeze_align(st)
-            ):
-                await self._broadcast_align_scope(account_id, match_id)
 
     async def watch_align_authorities(self) -> None:
-        """Single-process watchdog: silence freezes even with no inbound traffic."""
+        """Expire reset preparation only; socket lifecycle owns publisher authority."""
         while True:
             await asyncio.sleep(0.25)
             for account_id, match_id in list(self._director_state):
@@ -1819,13 +1608,13 @@ class ConnectionManager:
     def _director_state_payload(
         self, account_id: str, match_id: str
     ) -> dict[str, Any] | None:
-        """构建 state_sync 回放 payload；该 key 无任何指令历史时返回 None。
+        """构建 state_sync：有作用域就回放 owner；尚无 T 时不生成锚点。
 
         started_at/paused_at/now_ms 均为服务器毫秒时间戳，前端以 now_ms 做
         时钟偏移校正（elapsed = now_ms - started_at，已扣暂停）。
         """
         st = self._director_state.get((account_id, match_id))
-        if st is None or (not st.has_history and st.align_anchor is None):
+        if st is None:
             return None
         out: dict[str, Any] = {
             "scene": st.scene,
@@ -1836,16 +1625,15 @@ class ConnectionManager:
                 "now_ms": _now_ms(),
             },
             "config": st.config,
-            "align_lease_required": st.lease_mode,
+            "align_lease_required": False,
+            "authority_epoch": st.align_epoch,
+            "align_authority_src": st.align_authority_src,
             "timeline_version": st.timeline_version,
             "reset": st.reset_state,
         }
         # frame_align 独立键、不合并进 state_sync：仅该场收到过才补发权威 T。
         if st.align_anchor is not None:
             out["frame_align"] = self._align_snapshot(st)
-        # 当前帧级对齐权威 src：让晚连/观众/权威自身一致跟随同一 src。
-        if st.align_authority_src is not None:
-            out["align_authority_src"] = st.align_authority_src
         return out
 
     async def broadcast_to_other_directors(

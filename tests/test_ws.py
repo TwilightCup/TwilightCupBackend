@@ -53,7 +53,7 @@ def test_chat_broadcast_to_all(world) -> None:  # type: ignore[no-untyped-def]
 def test_director_read_only(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d:
-        _drain(ws_d, 5)
+        _drain(ws_d, 6)
         ws_d.send_json({"type": "chat", "text": "导播发言"})
         err = ws_d.receive_json()
         assert err["type"] == "error"
@@ -86,6 +86,7 @@ def test_ended_match_allows_referee_and_director_readonly(
     ) as ws:
         assert ws.receive_json()["type"] == "auth_ok"
         _drain(ws, 4)  # ready_state / phase_change / seat_state A / seat_state B
+        _recv_until(ws, lambda m: m.get("action") == "state_sync")
         ws.send_json({"type": "director_command", "action": "switch_scene"})
         err = ws.receive_json()
         assert err["type"] == "error"
@@ -102,7 +103,7 @@ def test_ended_match_allows_referee_and_director_readonly(
 def test_director_receives_chat(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d:
-        _drain(ws_d, 5)
+        _drain(ws_d, 6)
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
             _drain(ws_a, 6)
             ws_a.send_json({"type": "chat", "text": "hi"})
@@ -192,24 +193,16 @@ def test_prep_reconnect_hint_targeted(world) -> None:  # type: ignore[no-untyped
             # 裁判侧仅有上线广播（seat_state + system seat），无 prep/pick 提示
             for _ in range(2):
                 m = ws_r.receive_json()
-                assert not (
-                    m["type"] == "system" and m.get("kind") in ("prep", "pick")
-                )
+                assert not (m["type"] == "system" and m.get("kind") in ("prep", "pick"))
             ws_a.send_json({"type": "chat", "text": "!ready"})
-            _recv_until(
-                ws_a, lambda m: m["type"] == "system" and m["kind"] == "ready"
-            )
+            _recv_until(ws_a, lambda m: m["type"] == "system" and m["kind"] == "ready")
         _recv_until(ws_r, lambda m: m["type"] == "system" and m["kind"] == "seat")
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a2:
             seen2 = _handshake(ws_a2)
             # 已就绪重连：无 prep 提示，但当前选图提示仍在（与就绪态无关）
-            assert not any(
-                m["type"] == "system" and m["kind"] == "prep" for m in seen2
-            )
+            assert not any(m["type"] == "system" and m["kind"] == "prep" for m in seen2)
             assert any(
-                m["type"] == "system"
-                and m["kind"] == "pick"
-                and "ML1" in m["text"]
+                m["type"] == "system" and m["kind"] == "pick" and "ML1" in m["text"]
                 for m in seen2
             )
     # 定向提示不落库：系统行只有 prep.started / ready / 上下线（均 Twilight）
@@ -221,7 +214,7 @@ def test_draft_sync_broadcast_to_director(world) -> None:  # type: ignore[no-unt
     """裁判上报 ban/pick 草稿状态 → 存储 + 广播给导播。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d:
-        _drain(ws_d, 5)  # auth_ok / ready_state / phase_change
+        _drain(ws_d, 6)  # auth_ok / ready_state / phase_change
         with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
             _drain(ws_r, 5)
             state = {
@@ -239,7 +232,7 @@ def test_draft_sync_only_referee(world) -> None:  # type: ignore[no-untyped-def]
     """非裁判发 draft_sync → 403。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d:
-        _drain(ws_d, 5)
+        _drain(ws_d, 6)
         ws_d.send_json({"type": "draft_sync", "state": {"stage": "PICK"}})
         err = ws_d.receive_json()
         assert err["type"] == "error"

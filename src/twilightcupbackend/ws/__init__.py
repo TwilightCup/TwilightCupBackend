@@ -27,7 +27,8 @@ def register_ws(app: FastAPI) -> None:
         match 为可选 query 参数，连到指定比赛（裁判多标签页选场）；
         cap 为可选 query 参数，逗号分隔的客户端能力声明（如 preload1=会上报预载）；
         exclusive=1 为可选 query 参数，要求独占身份 key（同 key 旧连接被顶掉，
-        见 ConnectionManager.connect）——裁判端/选手端用，导播 OBS 多源不带。"""
+        见 ConnectionManager.connect）——裁判端/选手端用；DIRECTOR console
+        默认替换同范围旧 console，stage/未声明用途忽略 exclusive。"""
         cm: ConnectionManager = app.state.connection_manager
         conn = await cm.connect(
             websocket,

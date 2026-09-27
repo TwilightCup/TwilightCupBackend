@@ -37,8 +37,8 @@ def test_director_command_relayed_to_stage(world) -> None:  # type: ignore[no-un
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_stage,
     ):
         _drain(ws_pa, 6)
-        _drain(ws_console, 5)
-        _drain(ws_stage, 5)
+        _drain(ws_console, 6)
+        _drain(ws_stage, 6)
         ws_console.send_json(
             {
                 "type": "director_command",
@@ -88,7 +88,7 @@ def test_director_command_not_cross_account(world) -> None:  # type: ignore[no-u
     """改派导播后，旧导播残留连接不收到新导播的舞台指令。"""
     client, db, session, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_old:
-        _drain(ws_old, 5)
+        _drain(ws_old, 6)
         # 改派导播为新账号；旧连接不主动断开，仍留在 store.directors
         new = Account(
             username="dri2",
@@ -103,7 +103,7 @@ def test_director_command_not_cross_account(world) -> None:  # type: ignore[no-u
             client.websocket_connect(f"/ws/{tok_new}") as ws_new,
             client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
         ):
-            _drain(ws_new, 5)
+            _drain(ws_new, 6)
             _drain(ws_pa, 6)
             ws_new.send_json({"type": "director_command", "action": "soon_start"})
             # 用一条全员聊天作序标：旧导播在收到它之前不得出现 director_cmd
@@ -141,8 +141,8 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
     ):
         _drain(ws_pa, 6)
         _drain(ws_ref, 5)
-        _drain(ws_console, 5)
-        _drain(ws_stage, 5)
+        _drain(ws_console, 6)
+        _drain(ws_stage, 6)
         ws_console.send_json(
             {
                 "type": "director_command",
@@ -194,7 +194,7 @@ def test_state_sync_replay_on_connect(world) -> None:  # type: ignore[no-untyped
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console,
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_pa,
     ):
-        _drain(ws_console, 5)
+        _drain(ws_console, 6)
         _drain(ws_pa, 5)
         for body in (
             {"action": "switch_scene", "payload": {"scene": "soon"}},
@@ -229,7 +229,7 @@ def test_state_sync_soon_timeline(world) -> None:  # type: ignore[no-untyped-def
     """倒计时时间线：start→pause 各记点；恢复做暂停补偿；reset 清时间线留 target。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['dri']}") as ws_console:
-        _drain(ws_console, 5)
+        _drain(ws_console, 6)
         ws_console.send_json(
             {
                 "type": "director_command",
@@ -264,8 +264,8 @@ def test_state_sync_soon_timeline(world) -> None:  # type: ignore[no-untyped-def
                 assert s3["target_ms"] == 300000
 
 
-def test_state_sync_absent_without_history(world) -> None:  # type: ignore[no-untyped-def]
-    """无任何指令历史 → 新 DIRECTOR/选手/裁判连接均收不到 state_sync。"""
+def test_state_sync_without_history_has_no_anchor(world) -> None:  # type: ignore[no-untyped-def]
+    """无历史导播仍收到明确无主快照；选手/裁判没有该快照。"""
     client, _, _, tokens = world
     with (
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_dri,
@@ -273,6 +273,11 @@ def test_state_sync_absent_without_history(world) -> None:  # type: ignore[no-un
         client.websocket_connect(f"/ws/{tokens['ref']}") as ws_ref,
     ):
         _drain(ws_dri, 5)
+        snapshot = _state_sync(ws_dri)
+        assert snapshot["align_authority_src"] is None
+        assert snapshot["align_role"] == "follower"
+        assert snapshot["align_lease_required"] is False
+        assert "frame_align" not in snapshot
         _drain(ws_pa, 5)
         _drain(ws_ref, 5)
         ws_pa.send_json({"type": "chat", "text": "marker"})

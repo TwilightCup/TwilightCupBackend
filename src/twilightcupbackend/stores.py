@@ -22,11 +22,10 @@ from .timer_service import CountdownTimer, CounterTimer
 
 @dataclass
 class FrameAlignLease:
+    """Legacy status diagnostics only; never an ownership lease."""
+
     status: FrameAlignStatus | None = None
     received_ms: int = 0
-    progressed_ms: int = 0
-    eligible_since_ms: int | None = None
-    blocked: bool = False
 
 
 @dataclass(eq=False)

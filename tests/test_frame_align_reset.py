@@ -127,7 +127,7 @@ async def test_failure_busy_idempotency_and_deadline(lease, monkeypatch):  # noq
     assert st.reset_state["status"] == "failed" and st.align_anchor["frozen"]
     await request(cm, a, 8000000, "r3")
     assert st.timeline_version == 2
-    # Keep the lease alive but never confirm presentation.
+    # Diagnostic readiness does not substitute for a presentation acknowledgement.
     for seq in range(4, 10):
         clock[0] += 2000
         await report(
@@ -187,14 +187,15 @@ async def test_permissions_disconnect_and_replacement_after_reset(lease, monkeyp
     await request(cm, c, 9000000)
     assert st.timeline_version == 0
     await request(cm, a, 9000000)
-    await report(cm, b, 4, timeline_version=1, progress_t_us=9000000)
-    clock[0] += 2001
-    await report(cm, b, 5, timeline_version=1, progress_t_us=9000000)
+    b.align_client = "console"
+    cm._add_director(store, b)
     cm._remove_connection(store, a)
     await cm._flush_align_notifications()
     assert st.reset_state["code"] == "OWNER_LOST" and st.align_owner is b
+    old_notices = list(messages(a, "frame_align_reset_result"))
     await ack(cm, a, presented_t_us=9000000)
-    assert messages(a, "frame_align_reset_result")[-1]["code"] == "NOT_AUTHORITY"
+    assert messages(a, "frame_align_reset_result") == old_notices
+    assert st.reset_state["code"] == "OWNER_LOST"
     await report(cm, b, 6, timeline_version=1, progress_t_us=9000000)
     assert publish(
         cm, b, t_us=9000000, seq=1, epoch=st.align_epoch, timeline_version=1
@@ -202,7 +203,7 @@ async def test_permissions_disconnect_and_replacement_after_reset(lease, monkeyp
     assert st.frame_align_t_us == 9000000
 
 
-async def test_expired_lease_cannot_reset_and_id_conflict(lease, monkeypatch):  # noqa: F811
+async def test_no_lease_expiry_but_busy_reset_and_id_conflict(lease, monkeypatch):  # noqa: F811
     cm, pages, _, clock = lease
     monkeypatch.setattr(module, "_now_ms", lambda: 40000)
     st = await bootstrap(cm, pages, clock)
@@ -212,11 +213,11 @@ async def test_expired_lease_cannot_reset_and_id_conflict(lease, monkeypatch):  
     assert messages(a, "frame_align_reset_result")[-1]["code"] == "REQUEST_ID_CONFLICT"
     clock[0] += 5001
     await request(cm, a, 8000000, "r2")
-    assert messages(a, "frame_align_reset_result")[-1]["code"] == "LEASE_INVALID"
+    assert messages(a, "frame_align_reset_result")[-1]["code"] == "RESET_BUSY"
     assert st.timeline_version == 1
 
 
-async def test_ready_without_ack_stays_frozen_and_missing_version_cannot_renew(
+async def test_ready_without_ack_stays_frozen_and_missing_version_is_ignored(
     lease,  # noqa: F811
     monkeypatch,
 ):
@@ -233,7 +234,8 @@ async def test_ready_without_ack_stays_frozen_and_missing_version_cannot_renew(
     clock[0] += 4001
     await report(cm, a, 100)  # missing timeline_version is legacy version zero
     await cm._expire_align(a.account_id, a.match_id)
-    assert st.align_owner is None and st.reset_state["code"] == "OWNER_LOST"
+    assert st.align_owner is a and st.reset_state["status"] == "preparing"
+    assert a.align_lease.status.timeline_version == 1
 
 
 def test_reset_wire_broadcast_and_late_join_snapshot(world, monkeypatch):
@@ -304,3 +306,76 @@ def test_reset_wire_broadcast_and_late_join_snapshot(world, monkeypatch):
         for sock in (ws, stage1, stage2):
             while event(sock, "frame_align_reset_result")["status"] != "completed":
                 pass
+
+
+@pytest.mark.parametrize("offset", [0, 1_000_000])
+async def test_reset_without_any_status_requires_real_ack_and_is_idempotent(
+    lease,  # noqa: F811
+    monkeypatch,
+    offset,
+):
+    cm, pages, _, _ = lease
+    owner = pages[0]
+    st = cm._director_state[(owner.account_id, owner.match_id)]
+    monkeypatch.setattr(module, "_now_ms", lambda: 40000)
+    assert owner.align_lease.status is None and st.align_anchor is None
+    p = await request(cm, owner, 9000000)
+    assert st.align_anchor is not None
+    assert st.reset_state["status"] == "preparing"
+    assert st.align_anchor["frozen"] and not st.align_anchor["ready_a"]
+    await ack(cm, owner, presented_t_us=9000000 + offset)
+    assert st.reset_state["status"] == "completed"
+    assert st.frame_align_t_us == 9000000 + offset
+    assert owner.align_lease.status is None
+    version, seq = st.timeline_version, st.align_seq
+    await ack(cm, owner, presented_t_us=9000000 + offset)
+    await command(cm, owner, "frame_align_reset", **p)
+    assert st.timeline_version == version and st.align_seq == seq
+    assert messages(owner, "frame_align_reset_result")[-1]["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "extra,code",
+    [
+        ({}, "NOT_PRESENTED"),
+        ({"presented_t_us": 8999999}, "NOT_PRESENTED"),
+        ({"presented_t_us": 10000001}, "NOT_PRESENTED"),
+        ({"presented_t_us": True}, "INVALID_REQUEST"),
+        ({"presented_t_us": 9000000, "authority_epoch": 0}, "STALE_VERSION"),
+        ({"presented_t_us": 9000000, "timeline_version": 0}, "STALE_VERSION"),
+        ({"presented_t_us": 9000000, "request_id": "unknown"}, "NO_TRANSACTION"),
+        ({"presented_t_us": 9000000, "reason": "prepare_failed"}, "NOT_PRESENTED"),
+        ({"outcome": "failed"}, "INVALID_REQUEST"),
+    ],
+)
+async def test_reset_ack_validation_without_status(lease, monkeypatch, extra, code):  # noqa: F811
+    cm, pages, _, _ = lease
+    owner = pages[0]
+    monkeypatch.setattr(module, "_now_ms", lambda: 40000)
+    await request(cm, owner, 9000000)
+    await ack(cm, owner, **extra)
+    st = cm._director_state[(owner.account_id, owner.match_id)]
+    assert st.reset_state["status"] == "preparing"
+    assert messages(owner, "frame_align_reset_result")[-1]["code"] == code
+
+
+async def test_reset_timeout_is_monotonic_and_does_not_cancel_owner(lease, monkeypatch):  # noqa: F811
+    cm, pages, _, clock = lease
+    owner = pages[0]
+    wall = [40000]
+    monkeypatch.setattr(module, "_now_ms", lambda: wall[0])
+    await request(cm, owner, 9000000)
+    st = cm._director_state[(owner.account_id, owner.match_id)]
+    epoch = st.align_epoch
+    for value in (86400000, -86400000):
+        wall[0] = value
+        await cm._expire_align(owner.account_id, owner.match_id)
+        assert st.reset_state["status"] == "preparing"
+    clock[0] += 10001
+    await cm._expire_align(owner.account_id, owner.match_id)
+    assert st.reset_state["code"] == "PREPARE_TIMEOUT"
+    assert st.align_owner is owner and st.align_epoch == epoch
+    before = st.align_seq
+    await ack(cm, owner, presented_t_us=9000000)
+    await cm._expire_align(owner.account_id, owner.match_id)
+    assert st.align_seq == before and st.reset_state["status"] == "failed"

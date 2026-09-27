@@ -251,7 +251,7 @@ class ClientDirectorSubscribe(BaseModel):
 
 
 class FrameAlignStatus(BaseModel):
-    """Authenticated page lease; all timestamps used for expiry are server-owned."""
+    """Optional console diagnostics; receipt time never controls ownership."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     connection_id: str
@@ -305,13 +305,13 @@ class ClientDirectorCommand(BaseModel):
     hlsB/pbA/pbB/histA/histB 八个字符串键，可部分缺失；结构由前端约定，
     服务端不校验、原样透传，与其余 action 的宽松口径一致）。
     frame_align: {"t_us", "src"?, "source_id"?, "ready_a"?, "ready_b"?,
-    "seq"?, "epoch"/"authority_epoch"?, "rate"?, "paused"?, "frozen"?}。
+    "seq", "epoch"/"authority_epoch", "rate"?, "paused"?, "frozen"?}。
     t_us 是非负 JS safe integer 微秒；rate 为 0..1.08；状态必须是 bool。
     可选 account_id/match_id 必须匹配认证连接。服务端按账号+比赛选举并绑定
-    align_client=console 且租约/解码就绪的 publisher；舞台和未声明用途者只接收。
+    最新注册的 align_client=console 为 publisher；舞台和未声明用途者只接收。
     非 source、旧 epoch/seq、回退 T 均忽略。
     输出 epoch/seq/服务器时间由服务端生成，扩展字段继续透传。
-    frame_align_status: FrameAlignStatus 严格类型的控制台租约，所有范围强制使用。
+    frame_align_status: 可选的严格类型诊断，保留范围/序号校验，不决定发布权。
     握手用途不在 payload 中携带，stage 不能以 capability=true 自行升级角色。
     frame_align_reset/frame_align_reset_ack: 显式时间轴重置请求及实际呈现确认，
     详见 docs/frame-align-reset.md；普通换主不解除 T 单调下限。

@@ -2,7 +2,7 @@
 
 - 同账号同场同座位 exclusive=1 新连接顶掉旧连接：先 displaced 再 close(4001)
 - key 含 match：同账号裁判不同场多标签互不干扰（即便都带 exclusive）
-- 导播不带 exclusive：OBS 多源并存不被踢；带 exclusive 则顶掉自己同场旧连接
+- 导播不带 exclusive：OBS 多源并存不被踢；console 仅顶掉自己同场旧 console
 - 被顶掉连接随后发来的在途裁判指令被忽略
 - 不带 exclusive 的旧语义（同座位静默替换、关闭码 1000）不变
 - 选手无缝接管：观察方不见 offline→online 抖动
@@ -122,8 +122,8 @@ def test_director_same_match_multi_conn_coexist(world) -> None:  # type: ignore[
             assert m["text"] == "to-directors"
 
 
-def test_director_exclusive_displaces_own_connections(world) -> None:  # type: ignore[no-untyped-def]
-    """机制补充：导播带 exclusive=1 顶掉自己同场全部旧连接（多连接 displacement）。"""
+def test_receiver_exclusive_does_not_displace_other_receivers(world):
+    """Receiver exclusive is ignored, including missing-purpose pages."""
     client, _, session, tokens = world
     url = f"/ws/{tokens['dri']}?match={session.id}"
     with (
@@ -132,17 +132,10 @@ def test_director_exclusive_displaces_own_connections(world) -> None:  # type: i
         client.websocket_connect(url + "&exclusive=1") as ws_d3,
     ):
         for ws in (ws_d1, ws_d2, ws_d3):
-            _drain(ws, 5)
-        for ws in (ws_d1, ws_d2):
-            assert ws.receive_json()["type"] == "displaced"
-            with pytest.raises(WebSocketDisconnect) as ei:
-                ws.receive_json()
-            assert ei.value.code == 4001
-        # 幸存的新连接可正常保活；只读约束不变（chat 被拒 403）
-        ws_d3.send_json({"type": "heartbeat"})
-        ws_d3.send_json({"type": "chat", "text": "x"})
-        m = _recv_until(ws_d3, lambda m: m.get("type") == "error")
-        assert m["code"] == 403
+            ws.send_json({"type": "heartbeat"})
+            ws.send_json({"type": "chat", "text": "x"})
+            m = _recv_until(ws, lambda m: m.get("type") in ("error", "displaced"))
+            assert m["type"] == "error" and m["code"] == 403
 
 
 def test_displaced_inflight_referee_command_ignored(world) -> None:  # type: ignore[no-untyped-def]
