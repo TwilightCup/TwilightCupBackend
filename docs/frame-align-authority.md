@@ -116,8 +116,7 @@ authority_epoch，以及递增输入 seq。服务端补全并转发给其他同�
   "waiting_sides": ["B"],
   "effective_at_ms": 1789649000000,
   "server_time_ms": 1789649000000,
-  "server_now_ms": 1789649000000,
-  "anchor_age_ms": 0
+  "server_now_ms": 1789649000000
 }
 ```
 
@@ -138,34 +137,6 @@ frame_align，舞台也能确认主仍在线；这不是媒体恢复或播放就
 刷新 server_now_ms/server_time_ms；外层带 align_role、connection_id 和
 align_lease_required。前端按 epoch/seq 丢弃过期锚点，根据 src=null、stale、
 锚点超时或断线遮住舞台，收到有效新主锚点且实际解码就绪后恢复。
-
-## 第一阶段计时修正：UTC 与时长分离
-
-绝对时间保持 UTC epoch 数值：t_us 为微秒；effective_at_ms、server_time_ms、
-server_now_ms 为毫秒。三者仍保留原兼容语义，服务器墙钟校时后也不伪造旧 UTC。
-
-frame_align（含 state_sync.frame_align）新增 anchor_age_ms：生成此次消息快照时，
-当前锚点生效以来经过的**非负单调毫秒时长**。计算基准为服务端本进程
-`time.monotonic_ns() // 1_000_000`；只传相减后的年龄，绝不传单调时钟绝对读数，
-也不能与客户端或另一进程的单调时钟读数相减。该字段由服务端覆盖，忽略客户端
-同名输入。读取/重放快照不清零年龄，也不改变 T、seq 或 effective_at_ms。
-
-正常新锚点、冻结、换主、媒体等待保活、reset 开始/完成/失败均建立新的单调
-年龄基准。冻结保活年龄从新保活锚点计起，不代表有新视频帧，也不代表 T 推进；
-仍须遵守 frozen、paused、stale 和 ready。anchor_age_ms 不包含消息离开服务器
-后的网络传输时间，不是端到端时钟偏差或媒体延迟测量。
-
-publisher 的帧静默期限同样只用单调时间计算，仍保留原有超过 5000ms 才冻结的
-容忍度（另有 watchdog 调度粒度）。UTC 独立前跳不会误冻结，UTC 回拨不会推迟
-实际静默超时。租约、稳定期和接任期限原本已使用单调时间；reset 的 10000ms
-准备期限也原本如此，本次不改变它们的时限、状态机或 UTC 目标范围校验。
-
-总误差不超过 5 秒、流畅优先是整体目标；本阶段只修复服务端耗时对墙钟跳变的
-依赖，不新增锚点年龄阻断规则，不更改选主、解码或追赶策略。旧客户端可忽略
-新增字段，保留 UTC 差值回退兼容；要避免旧客户端在墙钟校时时误算年龄，后续
-客户端应优先使用 anchor_age_ms，再用本地接收后的单调经过时间处理消息老化。
-不能把它当 UTC 时间，也不能把不同进程的单调读数作直接比较。本次不修改前端、
-SEIInjector 或计时器，尚不构成端到端 5 秒误差验收。
 
 ## 限制与验证
 

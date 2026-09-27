@@ -168,13 +168,13 @@ class _DirectorState:
     # frame_align：导播帧级对齐权威虚拟时间 T（None=该场从未收到过 frame_align，
     # 否则不对外补发）。t_us 为 epoch 微秒，0 也是合法值（前端按未就绪兜底）；
     # ready_a/b 为舞台侧 A/B 是否已可上屏，缺省按 False。该 key 的权威 src 由
-    # align_authority_src 持有（多舞台并存时唯一权威、其余忽略）。
-    # last_mono_ms / anchor_mono_ms 为本进程单调毫秒，只用于耗时，不对外发送。
+    # align_authority_src 持有（多舞台并存时唯一权威、其余忽略）；last_ms 为
+    # 最近一次被采纳（该权威）frame_align 的服务器毫秒，用于超时冻结判定。
     frame_align_t_us: int | None = None
     frame_align_ready_a: bool = False
     frame_align_ready_b: bool = False
     align_authority_src: str | None = None
-    align_authority_last_mono_ms: int | None = None
+    align_authority_last_ms: int | None = None
     align_owner: Connection | None = None
     align_epoch: int = 0
     align_seq: int = 0
@@ -190,7 +190,6 @@ class _DirectorState:
     )
     takeover_deadline_ms: int | None = None
     align_anchor: dict[str, Any] | None = None
-    align_anchor_mono_ms: int | None = None
     align_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -569,30 +568,27 @@ class ConnectionManager:
         st.align_epoch = self._next_authority_epoch()
         st.align_seq = 0
         st.align_client_seq = None
-        st.align_authority_last_mono_ms = None
+        st.align_authority_last_ms = None
         if st.align_anchor is not None:
             now = _now_ms()
-            self._store_align_anchor(
-                st,
-                {
-                    **st.align_anchor,
-                    "src": st.align_authority_src,
-                    "source_id": st.align_authority_src,
-                    "epoch": st.align_epoch,
-                    "authority_epoch": st.align_epoch,
-                    "seq": 0,
-                    "frozen": True,
-                    "stale": True,
-                    "ready_a": False,
-                    "ready_b": False,
-                    "effective_at_ms": now,
-                    "server_time_ms": now,
-                    "server_now_ms": now,
-                    "reason": "waiting_publisher" if owner else reason,
-                    "active_sides": st.align_anchor.get("active_sides", ["A", "B"]),
-                    "waiting_sides": st.align_anchor.get("waiting_sides", []),
-                },
-            )
+            st.align_anchor = {
+                **st.align_anchor,
+                "src": st.align_authority_src,
+                "source_id": st.align_authority_src,
+                "epoch": st.align_epoch,
+                "authority_epoch": st.align_epoch,
+                "seq": 0,
+                "frozen": True,
+                "stale": True,
+                "ready_a": False,
+                "ready_b": False,
+                "effective_at_ms": now,
+                "server_time_ms": now,
+                "server_now_ms": now,
+                "reason": "waiting_publisher" if owner else reason,
+                "active_sides": st.align_anchor.get("active_sides", ["A", "B"]),
+                "waiting_sides": st.align_anchor.get("waiting_sides", []),
+            }
         scope_conn = owner or previous
         self.logger.info(
             "Frame authority account=%s match=%s epoch=%s source=%s reason=%s",
@@ -838,7 +834,7 @@ class ConnectionManager:
                                 conn.account_id, conn.match_id, st
                             )
                         outgoing = (
-                            self._align_snapshot(st) if act == "frame_align" else pl
+                            dict(st.align_anchor or {}) if act == "frame_align" else pl
                         )
                         await self.broadcast_to_other_directors(
                             conn, SrvDirectorCommand(action=act, payload=outgoing)
@@ -1253,60 +1249,42 @@ class ConnectionManager:
             st.align_client_seq = None
         st.align_authority_src = src
         st.align_owner = conn
-        st.align_authority_last_mono_ms = _align_now_ms()
+        st.align_authority_last_ms = now
         st.align_client_seq = seq
         st.align_seq += 1
         st.frame_align_t_us = t
         st.frame_align_ready_a = payload.get("ready_a", False)
         st.frame_align_ready_b = payload.get("ready_b", False)
-        self._store_align_anchor(
-            st,
-            {
-                **payload,
-                "authority_epoch": st.align_epoch,
-                "epoch": st.align_epoch,
-                "timeline_version": st.timeline_version,
-                "reset": st.reset_state,
-                "seq": st.align_seq,
-                "t_us": t,
-                "rate": float(rate),
-                "paused": payload.get("paused", False),
-                "frozen": payload.get("frozen", False),
-                "stale": False,
-                "ready_a": st.frame_align_ready_a,
-                "ready_b": st.frame_align_ready_b,
-                "effective_at_ms": now,
-                "server_time_ms": now,
-                "server_now_ms": now,
-                "match_id": match_id,
-                "account_id": account_id,
-                "scene": scene,
-                "source_id": source_id,
-                "src": src,
-            },
-        )
-        return True, changed
-
-    def _store_align_anchor(self, st: _DirectorState, anchor: dict[str, Any]) -> None:
-        """Every new effective anchor gets its own local monotonic baseline."""
-        st.align_anchor_mono_ms = _align_now_ms()
-        st.align_anchor = {**anchor, "anchor_age_ms": 0}
-
-    def _align_snapshot(self, st: _DirectorState) -> dict[str, Any]:
-        # UTC fields retain their legacy meaning. Only monotonic subtraction
-        # measures elapsed time; never expose its process-local absolute value.
-        now = _now_ms()
-        age = (
-            max(0, _align_now_ms() - st.align_anchor_mono_ms)
-            if st.align_anchor_mono_ms is not None
-            else 0
-        )
-        return {
-            **(st.align_anchor or {}),
+        st.align_anchor = {
+            **payload,
+            "authority_epoch": st.align_epoch,
+            "epoch": st.align_epoch,
+            "timeline_version": st.timeline_version,
+            "reset": st.reset_state,
+            "seq": st.align_seq,
+            "t_us": t,
+            "rate": float(rate),
+            "paused": payload.get("paused", False),
+            "frozen": payload.get("frozen", False),
+            "stale": False,
+            "ready_a": st.frame_align_ready_a,
+            "ready_b": st.frame_align_ready_b,
+            "effective_at_ms": now,
             "server_time_ms": now,
             "server_now_ms": now,
-            "anchor_age_ms": age,
+            "match_id": match_id,
+            "account_id": account_id,
+            "scene": scene,
+            "source_id": source_id,
+            "src": src,
         }
+        return True, changed
+
+    def _align_snapshot(self, st: _DirectorState) -> dict[str, Any]:
+        # Keep the effective time: a late joiner compensates for anchor age using
+        # server timestamps, never by comparing browser/server wall clocks.
+        now = _now_ms()
+        return {**(st.align_anchor or {}), "server_time_ms": now, "server_now_ms": now}
 
     def _freeze_align(
         self, st: _DirectorState, reason: str = "publisher_silent"
@@ -1325,22 +1303,19 @@ class ConnectionManager:
         st.align_seq += 1
         st.frame_align_t_us = a["t_us"]
         st.frame_align_ready_a = st.frame_align_ready_b = False
-        self._store_align_anchor(
-            st,
-            {
-                **a,
-                "t_us": st.frame_align_t_us,
-                "seq": st.align_seq,
-                "frozen": True,
-                "stale": True,
-                "reason": reason,
-                "ready_a": False,
-                "ready_b": False,
-                "effective_at_ms": now,
-                "server_time_ms": now,
-                "server_now_ms": now,
-            },
-        )
+        st.align_anchor = {
+            **a,
+            "t_us": st.frame_align_t_us,
+            "seq": st.align_seq,
+            "frozen": True,
+            "stale": True,
+            "reason": reason,
+            "ready_a": False,
+            "ready_b": False,
+            "effective_at_ms": now,
+            "server_time_ms": now,
+            "server_now_ms": now,
+        }
         return True
 
     async def _broadcast_align_scope(self, account_id: str, match_id: str) -> None:
@@ -1412,33 +1387,30 @@ class ConnectionManager:
         st.align_seq += 1
         if presented_t_us is not None:
             st.frame_align_t_us = presented_t_us
-            st.align_authority_last_mono_ms = _align_now_ms()
+            st.align_authority_last_ms = now
         st.frame_align_ready_a = st.frame_align_ready_b = False
         if st.align_anchor is not None:
             active = st.align_anchor.get("active_sides", [])
             st.frame_align_ready_a = status == "completed" and "A" in active
             st.frame_align_ready_b = status == "completed" and "B" in active
-            self._store_align_anchor(
-                st,
-                {
-                    **st.align_anchor,
-                    "reset": dict(st.reset_state),
-                    "seq": st.align_seq,
-                    "t_us": st.frame_align_t_us,
-                    "frozen": status != "completed",
-                    "paused": False,
-                    "stale": status != "completed",
-                    "rate": 1.0,
-                    "ready_a": st.frame_align_ready_a,
-                    "ready_b": st.frame_align_ready_b,
-                    "reason": "reset_completed"
-                    if status == "completed"
-                    else "reset_failed",
-                    "effective_at_ms": now,
-                    "server_time_ms": now,
-                    "server_now_ms": now,
-                },
-            )
+            st.align_anchor = {
+                **st.align_anchor,
+                "reset": dict(st.reset_state),
+                "seq": st.align_seq,
+                "t_us": st.frame_align_t_us,
+                "frozen": status != "completed",
+                "paused": False,
+                "stale": status != "completed",
+                "rate": 1.0,
+                "ready_a": st.frame_align_ready_a,
+                "ready_b": st.frame_align_ready_b,
+                "reason": "reset_completed"
+                if status == "completed"
+                else "reset_failed",
+                "effective_at_ms": now,
+                "server_time_ms": now,
+                "server_now_ms": now,
+            }
         key = (reset["owner_id"], reset["request_id"])
         original, _ = st.reset_requests[key]
         st.reset_requests[key] = (original, dict(st.reset_state))
@@ -1566,7 +1538,7 @@ class ConnectionManager:
         st.align_client_seq = None
         st.frame_align_t_us = msg.target_t_us
         st.frame_align_ready_a = st.frame_align_ready_b = False
-        st.align_authority_last_mono_ms = None
+        st.align_authority_last_ms = None
         st.reset_deadline_ms = _align_now_ms() + 10_000
         st.reset_state = {
             "request_id": msg.request_id,
@@ -1606,37 +1578,32 @@ class ConnectionManager:
                 )
             else:
                 page.align_lease.status = None
-        self._store_align_anchor(
-            st,
-            {
-                **(st.align_anchor or {}),
-                "src": conn.connection_id,
-                "source_id": (st.align_anchor or {}).get(
-                    "source_id", conn.connection_id
-                ),
-                "account_id": conn.account_id,
-                "match_id": conn.match_id,
-                "scene": (st.align_anchor or {}).get("scene", st.scene or ""),
-                "timeline_version": st.timeline_version,
-                "reset": dict(st.reset_state),
-                "authority_epoch": st.align_epoch,
-                "epoch": st.align_epoch,
-                "seq": 0,
-                "t_us": msg.target_t_us,
-                "rate": 1.0,
-                "paused": False,
-                "frozen": True,
-                "stale": False,
-                "ready_a": False,
-                "ready_b": False,
-                "active_sides": [],
-                "waiting_sides": ["A", "B"],
-                "reason": "reset_preparing",
-                "effective_at_ms": now,
-                "server_time_ms": now,
-                "server_now_ms": now,
-            },
-        )
+        st.align_anchor = {
+            **(st.align_anchor or {}),
+            "src": conn.connection_id,
+            "source_id": (st.align_anchor or {}).get("source_id", conn.connection_id),
+            "account_id": conn.account_id,
+            "match_id": conn.match_id,
+            "scene": (st.align_anchor or {}).get("scene", st.scene or ""),
+            "timeline_version": st.timeline_version,
+            "reset": dict(st.reset_state),
+            "authority_epoch": st.align_epoch,
+            "epoch": st.align_epoch,
+            "seq": 0,
+            "t_us": msg.target_t_us,
+            "rate": 1.0,
+            "paused": False,
+            "frozen": True,
+            "stale": False,
+            "ready_a": False,
+            "ready_b": False,
+            "active_sides": [],
+            "waiting_sides": ["A", "B"],
+            "reason": "reset_preparing",
+            "effective_at_ms": now,
+            "server_time_ms": now,
+            "server_now_ms": now,
+        }
         await self._announce_authority(conn.account_id, conn.match_id, st)
         await self._broadcast_align_scope(conn.account_id, conn.match_id)
 
@@ -1835,10 +1802,9 @@ class ConnectionManager:
                 or not status.decode_ready
             )
             if (
-                st.align_authority_last_mono_ms is not None
+                st.align_authority_last_ms is not None
                 and not media_wait
-                and _align_now_ms() - st.align_authority_last_mono_ms
-                > _ALIGN_AUTHORITY_TIMEOUT_MS
+                and _now_ms() - st.align_authority_last_ms > _ALIGN_AUTHORITY_TIMEOUT_MS
                 and self._freeze_align(st)
             ):
                 await self._broadcast_align_scope(account_id, match_id)
