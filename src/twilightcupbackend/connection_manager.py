@@ -171,7 +171,6 @@ class _DirectorState:
     align_epoch: int = 0
     align_seq: int = 0
     align_client_seq: int | None = None
-    has_history: bool = False
     timeline_version: int = 0
     reset_state: dict[str, Any] | None = None
     reset_deadline_ms: int | None = None
@@ -197,7 +196,6 @@ class ConnectionManager:
         # 后台任务（断连提示等）：保留引用避免被 GC，完成后自动丢弃。
         self._background_tasks: set[asyncio.Task[object]] = set()
         self._align_notifications: set[asyncio.Task[None]] = set()
-        self._director_order = 0
         # Wall-clock seed reduces cross-boot collisions; it is not durable fencing.
         # Clients also get a fresh connection_id and must reset on reconnect.
         self._authority_epoch = time.time_ns() // 1000
@@ -538,8 +536,6 @@ class ConnectionManager:
 
     def _add_director(self, store: MatchStore, conn: Connection) -> list[Connection]:
         """Atomic registry swap; live registration holds the scope lock."""
-        self._director_order += 1
-        conn.director_order = self._director_order
         st = self._director_state.setdefault(
             (conn.account_id, store.id), _DirectorState()
         )
@@ -1114,7 +1110,6 @@ class ConnectionManager:
         """
         st = self._director_state.setdefault((account_id, match_id), _DirectorState())
         now = _now_ms()
-        st.has_history = True
         match action:
             case "switch_scene":
                 st.scene = payload.get("scene")
@@ -1584,7 +1579,6 @@ class ConnectionManager:
         # Compatibility-only diagnostics. Readiness, visibility and silence do
         # not grant, revoke or renew ownership and never generate an anchor.
         lease.status = status
-        lease.received_ms = _align_now_ms()
 
     async def _expire_align(self, account_id: str, match_id: str) -> None:
         st = self._director_state.get((account_id, match_id))

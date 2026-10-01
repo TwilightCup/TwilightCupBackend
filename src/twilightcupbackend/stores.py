@@ -25,7 +25,6 @@ class FrameAlignLease:
     """Legacy status diagnostics only; never an ownership lease."""
 
     status: FrameAlignStatus | None = None
-    received_ms: int = 0
 
 
 @dataclass(eq=False)
@@ -41,7 +40,6 @@ class Connection:
     capabilities: frozenset[str] = frozenset()
     align_client: Literal["console", "stage"] | None = None
     connection_id: str = field(default_factory=lambda: uuid4().hex)
-    director_order: int = 0
     auth_sent: bool = False
     authority_epoch_seen: int = 0
     align_lease: FrameAlignLease = field(default_factory=FrameAlignLease)
