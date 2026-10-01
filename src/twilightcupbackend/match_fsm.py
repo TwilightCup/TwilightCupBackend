@@ -382,6 +382,14 @@ class MatchEngine:
             )
             return
         pick = store.match.mappool.get_pick(pick_code)
+        self.logger.info(
+            "[pick-tags] inbound match=%s code=%s category=%s stored_tag=%r request_tags=%r",
+            match_id,
+            pick_code,
+            pick.category if pick is not None else None,
+            pick.tag if pick is not None else None,
+            tags,
+        )
         if pick is None:
             await self.cm.send_to_seat(
                 match_id,
@@ -395,6 +403,14 @@ class MatchEngine:
         tags = tags or []
         # 固有 Glitchless 服务端兜底并入：图池置了该标签就必然随选图下发
         tags = _with_inherent_tags(pick, tags)
+        self.logger.info(
+            "[pick-tags] effective match=%s code=%s category=%s stored_tag=%r effective_tags=%r",
+            match_id,
+            pick_code,
+            pick.category,
+            pick.tag,
+            tags,
+        )
         # 词条 / 重试次数校验（backend-ct-pick-tags §2.1）：客户端已拦截但不可信任
         error = _validate_pick_tags(
             pick,
