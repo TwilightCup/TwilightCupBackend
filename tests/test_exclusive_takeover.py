@@ -26,8 +26,11 @@ from twilightcupbackend.datatypes import (
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -76,6 +79,7 @@ def test_referee_same_match_exclusive_displaces_old(world) -> None:  # type: ign
         assert ei.value.code == 4001
         # 新连接：auth_ok + 全量快照照常
         assert ws2.receive_json()["type"] == "auth_ok"
+        assert ws2.receive_json()["type"] == "stream_links_update"
         snapshot = [ws2.receive_json()["type"] for _ in range(4)]
         assert snapshot == ["ready_state", "phase_change", "seat_state", "seat_state"]
 

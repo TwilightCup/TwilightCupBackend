@@ -30,6 +30,8 @@ from twilightcupbackend.datatypes import (
 
 # 消息描述（按模型类名），缺省则标记“待补充”。
 DESCRIPTIONS: dict[str, str] = {
+    "SrvStreamLinksUpdate": "比赛直播链接数据库快照；仅当前指定裁判/导播接收，"
+    "含 version=0 的初始状态。按 match_id+version 消费，详见 docs/stream-links.md。",
     # 客户端 -> 服务端
     "ClientChat": "选手/裁判发送的聊天文本（以 ``!`` 开头会被当作命令解析："
     "``!ready`` 仅选手、``!roll`` 所有人、``!timer [秒]|reset`` 与 "
@@ -81,9 +83,11 @@ DESCRIPTIONS: dict[str, str] = {
     '指令：场景切换（``switch_scene``，payload ``{"scene": ...}``）、Coming '
     "Soon 倒计时操控（``soon_start``/``soon_pause``/``soon_reset``/"
     '``soon_set_target``，set_target payload ``{"target_ms": ...}``）与直播配置'
-    '实时下发（``config_update``，payload ``{"config": {...}}``，八个字符串键'
-    "rtmpA/rtmpB/hlsA/hlsB/pbA/pbB/histA/histB，可部分缺失，服务端不校验、"
-    "原样透传）。服务端以 ``director_cmd`` 原样定向转发，不落库、不回执发送方。",
+    '实时下发（``config_update``，payload ``{"config": {...}}``；'
+    "非链接键可部分缺失并沿原路径转发；hlsA/hlsB/embedA/embedB 仅当前指定导播"
+    "console 可持久化部分更新，严格校验、失败回 error；详见 docs/stream-links.md）。"
+    "frame_align/status/reset/ack 协议保持现状。非链接操控以 director_cmd 转发；"
+    "链接提交成功通知指定导播与裁判，包含发送者。",
     "ClientUtcTimestamp": "选手端 UTC 时间戳周期上报（连接后按固定间隔发送，间隔在"
     "选手端配置中设置）：utc_ms 为 Unix UTC 毫秒时间戳。仅选手席位有效；"
     "服务端按席暂存最近一条并中转裁判/导播，不参与比赛判定。",

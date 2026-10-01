@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from classy_fastapi import Routable, get, patch, post
+from classy_fastapi import Routable, get, patch, post, put
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,13 @@ from ..datatypes import (
     now_ts,
 )
 from ..storage import Storage
+from ..stream_links import (
+    STREAM_LINK_RESPONSES,
+    StreamLinksOut,
+    StreamLinksPut,
+    StreamLinksService,
+    stream_links_account,
+)
 from .schemas import (
     AccountOut,
     BracketView,
@@ -44,6 +51,37 @@ class MeController(Routable):
         self.db = db
         self.cm = cm
         self.storage = storage
+
+    @get(
+        "/matches/{match_id}/stream-links",
+        response_model=StreamLinksOut,
+        responses=STREAM_LINK_RESPONSES,
+    )
+    def stream_links(
+        self, match_id: str, account: Account = Depends(stream_links_account)
+    ) -> StreamLinksOut:
+        return StreamLinksService(self.db).read(match_id, account)
+
+    @put(
+        "/matches/{match_id}/stream-links",
+        response_model=StreamLinksOut,
+        responses=STREAM_LINK_RESPONSES,
+    )
+    async def save_stream_links(
+        self,
+        match_id: str,
+        body: StreamLinksPut,
+        account: Account = Depends(stream_links_account),
+    ) -> StreamLinksOut:
+        saved, changed = StreamLinksService(self.db).save(
+            match_id,
+            account,
+            body.model_dump(exclude={"expected_version"}),
+            body.expected_version,
+        )
+        if changed and self.cm is not None:
+            await self.cm.notify_stream_links(match_id)
+        return saved
 
     @staticmethod
     def _is_referee_or_admin(match, account: Account) -> bool:  # type: ignore[no-untyped-def]

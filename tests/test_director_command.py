@@ -16,8 +16,11 @@ from twilightcupbackend.datatypes import Account, AccountType
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -118,7 +121,7 @@ def test_director_command_not_cross_account(world) -> None:  # type: ignore[no-u
 
 
 def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-untyped-def]
-    """config_update：直播配置实时下发 → 舞台原样收；选手/裁判/发送方收不到。
+    """config_update：非链接配置下发 → 舞台原样收；选手/裁判/发送方收不到。
 
     payload 结构与其余 action 口径一致：服务端不校验 config 形状，原样透传。
     """
@@ -126,8 +129,6 @@ def test_config_update_relayed_only_to_stage(world) -> None:  # type: ignore[no-
     config = {
         "rtmpA": "rtmp://a/live",
         "rtmpB": "rtmp://b/live",
-        "hlsA": "http://a/hls.m3u8",
-        "hlsB": "http://b/hls.m3u8",
         "pbA": "pb-a",
         "pbB": "pb-b",
         "histA": "3胜2负",
@@ -213,7 +214,14 @@ def test_state_sync_replay_on_connect(world) -> None:  # type: ignore[no-untyped
             assert p["soon"]["started_at"] is not None
             assert p["soon"]["paused_at"] is None
             assert p["soon"]["now_ms"] >= p["soon"]["started_at"]
-            assert p["config"] == {"rtmpA": "rtmp://a/live", "histA": "3胜2负"}
+            assert p["config"] == {
+                "rtmpA": "rtmp://a/live",
+                "histA": "3胜2负",
+                "hlsA": "",
+                "hlsB": "",
+                "embedA": "",
+                "embedB": "",
+            }
         # 选手收不到 state_sync：以序标聊天界定
         ws_pa.send_json({"type": "chat", "text": "marker"})
         for _ in range(10):
@@ -328,4 +336,10 @@ def test_frame_align_absent_without_history(world) -> None:  # type: ignore[no-u
             p = _state_sync(ws_stage)
             assert "frame_align" not in p
             assert p.get("align_authority_src") is None
-            assert p["config"] == {"rtmpA": "rtmp://a/live"}
+            assert p["config"] == {
+                "rtmpA": "rtmp://a/live",
+                "hlsA": "",
+                "hlsB": "",
+                "embedA": "",
+                "embedB": "",
+            }

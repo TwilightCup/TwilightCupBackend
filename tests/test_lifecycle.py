@@ -147,7 +147,7 @@ def test_single_active_match_enforced(env) -> None:  # type: ignore[no-untyped-d
     db.matches.insert(s3)
     tok = issue_token(ref2, settings)
     with client.websocket_connect(f"/ws/{tok}?match={s3.id}") as ws_r:
-        for _ in range(5):  # auth_ok / ready_state / phase_change / seat_state×2
+        for _ in range(6):  # auth_ok / stream_links / ready / phase / seat_state×2
             ws_r.receive_json()
         ws_r.send_json({"type": "referee_mark_prep"})
         msg = ws_r.receive_json()

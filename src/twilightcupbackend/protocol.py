@@ -22,6 +22,7 @@ from .datatypes import (
     RoundVerdict,
     now_ts,
 )
+from .stream_links import StreamLinksOut
 
 _cfg = ConfigDict(extra="forbid")
 
@@ -724,6 +725,11 @@ class SrvDisplaced(BaseModel):
     reason: str  # 目前仅 "superseded_by_new_connection"
 
 
+class SrvStreamLinksUpdate(BaseModel):
+    type: Literal["stream_links_update"] = "stream_links_update"
+    payload: StreamLinksOut
+
+
 class SrvError(BaseModel):
     model_config = _cfg
     type: Literal["error"] = "error"
@@ -761,5 +767,6 @@ ServerMessage = (
     | SrvDirectorCommand
     | SrvMatchStatus
     | SrvDisplaced
+    | SrvStreamLinksUpdate
     | SrvError
 )

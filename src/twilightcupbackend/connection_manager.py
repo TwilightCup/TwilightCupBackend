@@ -16,8 +16,9 @@ from logging import Logger, getLogger
 from typing import TYPE_CHECKING, Any
 
 import jwt
-from fastapi import WebSocket
+from fastapi import HTTPException, WebSocket
 from pydantic import ValidationError
+from pymongo.errors import PyMongoError
 
 from . import i18n
 from .auth import decode_token
@@ -73,11 +74,18 @@ from .protocol import (
     SrvPreloadState,
     SrvReadyState,
     SrvSeatState,
+    SrvStreamLinksUpdate,
     SrvSystem,
     SrvUtcTimestamp,
     parse_client_message,
 )
 from .stores import Connection, MatchRegistry, MatchStore
+from .stream_links import (
+    LINK_FIELDS,
+    StreamLinksOut,
+    StreamLinksService,
+    normalize_link,
+)
 
 if TYPE_CHECKING:
     from .match_fsm import MatchEngine
@@ -315,6 +323,8 @@ class ConnectionManager:
             )
             conn.auth_sent = True
             conn.authority_epoch_seen = auth_epoch
+            if seat in (Seat.DIRECTOR, Seat.REFEREE):
+                await self._send_stream_links_snapshot(conn)
 
         displaced: list[Connection] = []
         legacy: Connection | None = None
@@ -474,6 +484,9 @@ class ConnectionManager:
                                 "publisher" if st.align_owner is conn else "follower"
                             )
                             replay["connection_id"] = conn.connection_id
+                            replay["config"] = self._stream_links_config(
+                                conn.account_id, store.id, st.config
+                            )
                             await self._send(
                                 conn,
                                 SrvDirectorCommand(action="state_sync", payload=replay),
@@ -807,6 +820,13 @@ class ConnectionManager:
                 # frame_align 经唯一权威选举：仅被采纳（权威或其接任）才扇出，
                 # 非权威不转发（观众侧看不到第二套 T）。
                 if await self._require_seat(conn, Seat.DIRECTOR):
+                    if act == "config_update":
+                        cfg = pl.get("config")
+                        if isinstance(cfg, dict) and LINK_FIELDS.intersection(cfg):
+                            cfg = await self._save_legacy_stream_links(conn, cfg)
+                            if not cfg:
+                                return
+                            pl = {**pl, "config": cfg}
                     st = self._director_state.setdefault(
                         (conn.account_id, conn.match_id), _DirectorState()
                     )
@@ -1618,7 +1638,7 @@ class ConnectionManager:
                 "paused_at": st.soon_paused_ms,
                 "now_ms": _now_ms(),
             },
-            "config": st.config,
+            "config": self._stream_links_config(account_id, match_id, st.config),
             "align_lease_required": False,
             "authority_epoch": st.align_epoch,
             "align_authority_src": st.align_authority_src,
@@ -1629,6 +1649,115 @@ class ConnectionManager:
         if st.align_anchor is not None:
             out["frame_align"] = self._align_snapshot(st)
         return out
+
+    async def _save_legacy_stream_links(
+        self, conn: Connection, config: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        other = {key: value for key, value in config.items() if key not in LINK_FIELDS}
+        if conn.align_client != "console":
+            await self._send(conn, SrvError(code=403, msg="stream_links_forbidden"))
+            return other
+        try:
+            account = self.db.accounts.get(conn.account_id)
+            if account is None:
+                await self._send(conn, SrvError(code=403, msg="stream_links_forbidden"))
+                return None
+            values = {
+                key: normalize_link(config[key], key)
+                for key in LINK_FIELDS.intersection(config)
+            }
+            _, changed = StreamLinksService(self.db).save(
+                conn.match_id, account, values, None
+            )
+        except ValueError:
+            await self._send(conn, SrvError(code=422, msg="stream_links_invalid"))
+            return None
+        except PyMongoError:
+            await self._send(conn, SrvError(code=503, msg="stream_links_unavailable"))
+            return None
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            await self._send(
+                conn,
+                SrvError(
+                    code=exc.status_code,
+                    msg=detail.get("code", "stream_links_unavailable"),
+                ),
+            )
+            return None
+        if changed:
+            await self.notify_stream_links(conn.match_id)
+        else:
+            await self._send_stream_links_snapshot(conn, compatibility=True)
+        return other
+
+    def _stream_links_config(
+        self, account_id: str, match_id: str, config: dict[str, Any]
+    ) -> dict[str, Any]:
+        out = {key: value for key, value in config.items() if key not in LINK_FIELDS}
+        account = self.db.accounts.get(account_id)
+        match = self.db.matches.get(match_id)
+        if (
+            match is not None
+            and account is not None
+            and match.director_id == account.id
+            and AccountType.DIRECTOR in account.roles
+        ):
+            out.update({key: getattr(match.stream_links, key) for key in LINK_FIELDS})
+        return out
+
+    def _stream_links_snapshot_payload(self, conn: Connection) -> StreamLinksOut | None:
+        match = self.db.matches.get(conn.match_id)
+        account = self.db.accounts.get(conn.account_id)
+        if match is None or account is None:
+            return None
+        authorized = (
+            conn.seat == Seat.DIRECTOR
+            and account.id == match.director_id
+            and AccountType.DIRECTOR in account.roles
+        ) or (
+            conn.seat == Seat.REFEREE
+            and account.id == match.referee_id
+            and AccountType.REFEREE in account.roles
+        )
+        if not authorized:
+            return None
+        return StreamLinksOut(match_id=match.id, **match.stream_links.model_dump())
+
+    async def _send_stream_links_snapshot(
+        self, conn: Connection, compatibility: bool = False
+    ) -> None:
+        payload = self._stream_links_snapshot_payload(conn)
+        if payload is None:
+            return
+        await self._send(conn, SrvStreamLinksUpdate(payload=payload))
+        if compatibility and conn.seat == Seat.DIRECTOR:
+            payload = self._stream_links_snapshot_payload(conn)
+            if payload is None:
+                return
+            await self._send(
+                conn,
+                SrvDirectorCommand(
+                    action="config_update",
+                    payload={
+                        "config": {key: getattr(payload, key) for key in LINK_FIELDS}
+                    },
+                ),
+            )
+
+    async def notify_stream_links(self, match_id: str) -> None:
+        store = self.registry.get(match_id)
+        if store is None:
+            return
+        connections = [*store.directors, *store.connections.values()]
+        for conn in connections:
+            if conn.auth_sent and conn.seat in (Seat.DIRECTOR, Seat.REFEREE):
+                try:
+                    await self._send_stream_links_snapshot(conn, compatibility=True)
+                except Exception:
+                    self.logger.debug(
+                        "Stream links notification failed; use GET to recover."
+                    )
 
     async def broadcast_to_other_directors(
         self, sender: Connection, msg: ServerMessage

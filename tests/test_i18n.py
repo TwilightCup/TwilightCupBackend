@@ -13,8 +13,11 @@ _LOCALES_DIR = Path(__file__).resolve().parents[1] / "locales"
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _skip_echo(ws) -> None:  # type: ignore[no-untyped-def]

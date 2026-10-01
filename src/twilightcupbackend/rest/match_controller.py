@@ -156,7 +156,7 @@ class MatchController(Routable):
             409: {"description": "状态切换非法 / 选手在另一场进行中的比赛"},
         },
     )
-    def update(
+    async def update(
         self,
         match_id: str,
         body: MatchUpdate,
@@ -165,6 +165,7 @@ class MatchController(Routable):
         match = self.db.matches.get(match_id)
         if match is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        previous_players = (match.player_a_id, match.player_b_id)
         if body.name is not None:
             match.name = body.name
         if body.player_a is not None:
@@ -185,6 +186,11 @@ class MatchController(Routable):
             if conflict:
                 raise HTTPException(status.HTTP_409_CONFLICT, conflict)
         self.db.matches.replace(match)
+        if self.cm is not None and previous_players != (
+            match.player_a_id,
+            match.player_b_id,
+        ):
+            await self.cm.notify_stream_links(match_id)
         return MatchOut.from_match(match, self.db, self.storage)
 
     @staticmethod

@@ -352,6 +352,7 @@ def test_ws_paused_blocks_referee_prep(env) -> None:  # type: ignore[no-untyped-
     tok = issue_token(ref, settings)
     with client.websocket_connect(f"/ws/{tok}?match={s1.id}") as ws:
         ws.receive_json()  # auth_ok
+        assert ws.receive_json()["type"] == "stream_links_update"
         ws.receive_json()  # ready_state
         ws.receive_json()  # phase_change
         ws.receive_json()  # seat_state A
@@ -370,6 +371,7 @@ def test_ws_pause_resume_broadcast_match_status(env) -> None:  # type: ignore[no
     ref_tok = issue_token(ref, settings)
     with client.websocket_connect(f"/ws/{ref_tok}?match={s1.id}") as ws:
         ws.receive_json()  # auth_ok
+        assert ws.receive_json()["type"] == "stream_links_update"
         ws.receive_json()  # ready_state
         ws.receive_json()  # phase_change
         ws.receive_json()  # seat_state A

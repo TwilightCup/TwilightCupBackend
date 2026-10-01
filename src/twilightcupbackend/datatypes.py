@@ -404,6 +404,16 @@ class Mappool(BaseModel):
         return [pick for c in self.categories for pick in c.picks]
 
 
+class StreamLinks(BaseModel):
+    version: int = Field(default=0, ge=0, le=2**53 - 1)
+    hlsA: str = ""
+    hlsB: str = ""
+    embedA: str = ""
+    embedB: str = ""
+    updated_at_ms: int | None = None
+    updated_by: str | None = None
+
+
 class Match(Document):
     """比赛比赛（由管理员创建并配置）。"""
 
@@ -433,6 +443,7 @@ class Match(Document):
     # 关联回 Fixture；存量 None 由启动 seed（ensure_default_tournament）回填。
     tournament_id: str | None = None
     fixture_id: str | None = None
+    stream_links: StreamLinks = Field(default_factory=StreamLinks)
 
 
 # ---------------------------------------------------------------------------

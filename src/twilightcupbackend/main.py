@@ -13,6 +13,8 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import asynccontextmanager
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -158,6 +160,10 @@ def create_app(db: DBController | None = None) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        if request.url.path.endswith("/stream-links") and isinstance(exc.detail, dict):
+            return JSONResponse(
+                status_code=exc.status_code, content={"detail": exc.detail}
+            )
         # 错误体约定 {"msg": ...}：前端 extractMsg 读 msg 最稳（亦兼容旧 detail）。
         # CodedHTTPException 额外携带稳定字符串 code（如登录的
         # ENDPOINT_FORBIDDEN），前端可按 code 分支/i18n；普通异常无 code 字段。
@@ -175,6 +181,20 @@ def create_app(db: DBController | None = None) -> FastAPI:
         return JSONResponse(
             status_code=500, content={"code": 500, "msg": "内部服务器错误"}
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception(request: Request, exc: RequestValidationError):
+        if request.url.path.endswith("/stream-links"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "stream_links_invalid",
+                        "message": "Invalid stream links",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
 
     register_routes(app, ctl, settings)
     register_ws(app)

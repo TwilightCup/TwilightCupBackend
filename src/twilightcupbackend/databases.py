@@ -7,6 +7,7 @@ pydantic-mongo）以获得更好的 Python 3.14 兼容性。文档主键为字�
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pymongo.collection import Collection
@@ -26,6 +27,7 @@ from .datatypes import (
     MatchStatus,
     RoundRecord,
     SpeedrunCacheDoc,
+    StreamLinks,
     SystemEvent,
     Tournament,
 )
@@ -106,6 +108,52 @@ class Accounts(Repository[Account]):
 class Matches(Repository[Match]):
     def __init__(self, database: Database) -> None:
         super().__init__(database, "matches", Match)
+
+    def replace(self, model: Match) -> None:
+        fields = model.model_dump(mode="python", exclude={"id", "stream_links"})
+        while True:
+            old = self.collection.find_one({"_id": model.id})
+            if old is None:
+                self.collection.update_one(
+                    {"_id": model.id},
+                    {
+                        "$set": fields,
+                        "$setOnInsert": {"stream_links": StreamLinks().model_dump()},
+                    },
+                    upsert=True,
+                )
+                return
+            sides = [
+                side
+                for side in ("A", "B")
+                if old[f"player_{side.lower()}_id"]
+                != getattr(model, f"player_{side.lower()}_id")
+            ]
+            query: dict[str, Any] = {"_id": model.id}
+            updates = dict(fields)
+            if sides:
+                links = StreamLinks.model_validate(old.get("stream_links", {}))
+                if links.version == 2**53 - 1:
+                    raise OverflowError("Stream link version exhausted")
+                query.update(
+                    player_a_id=old["player_a_id"], player_b_id=old["player_b_id"]
+                )
+                if links.version == 0:
+                    query["$or"] = [
+                        {"stream_links.version": 0},
+                        {"stream_links.version": {"$exists": False}},
+                    ]
+                else:
+                    query["stream_links.version"] = links.version
+                links.version += 1
+                links.updated_at_ms = time.time_ns() // 1_000_000
+                links.updated_by = None
+                for side in sides:
+                    setattr(links, f"hls{side}", "")
+                    setattr(links, f"embed{side}", "")
+                updates["stream_links"] = links.model_dump()
+            if self.collection.update_one(query, {"$set": updates}).matched_count:
+                return
 
     def find_by_member(self, account_id: str) -> list[Match]:
         """返回该账号参与（任一角色）的比赛。"""
