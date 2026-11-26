@@ -15,6 +15,7 @@ from fastapi import Depends, HTTPException, status
 from ..auth import require_admin
 from ..controllers import DBController
 from ..datatypes import (
+    DEFAULT_TOURNAMENT_ID,
     Account,
     AccountType,
     Fixture,
@@ -124,7 +125,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事/图池不存在"},
-            400: {"description": "非 DRAFT 状态 / 分数非法"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事 / 分数非法"},
         },
     )
     def update(
@@ -134,6 +135,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require(tournament_id)
+        self._reject_default(t)
         if t.status != TournamentStatus.DRAFT:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "仅 DRAFT 状态赛事可修改核心字段"
@@ -155,11 +157,12 @@ class TournamentController(Routable):
         "/{tournament_id}",
         status_code=status.HTTP_204_NO_CONTENT,
         summary="删除赛事",
-        description="仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）。",
+        description="仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）；"
+        "默认赛事（孤立比赛容器）不可删除。",
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事"},
         },
     )
     def remove(
@@ -168,6 +171,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> None:
         t = self._require(tournament_id)
+        self._reject_default(t)
         if t.status != TournamentStatus.DRAFT:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅 DRAFT 状态赛事可删除")
         self.db.tournaments.delete(tournament_id)
@@ -183,7 +187,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态 / 账号不存在或角色不符"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"},
         },
     )
     def add_participants(
@@ -193,6 +197,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require_draft(tournament_id)
+        self._reject_default(t)
         for aid in self._resolve_usernames(body.usernames, AccountType.PLAYER, "选手"):
             if aid not in t.participant_ids:
                 t.participant_ids.append(aid)
@@ -207,7 +212,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态 / 账号不存在或角色不符"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"},
         },
     )
     def remove_participants(
@@ -217,6 +222,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require_draft(tournament_id)
+        self._reject_default(t)
         rm = set(self._resolve_usernames(body.usernames, AccountType.PLAYER, "选手"))
         t.participant_ids = [p for p in t.participant_ids if p not in rm]
         t.seed_order = [s for s in t.seed_order if s not in rm]
@@ -232,7 +238,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态 / 账号不存在或角色不符"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"},
         },
     )
     def add_referees(
@@ -242,6 +248,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require_draft(tournament_id)
+        self._reject_default(t)
         for aid in self._resolve_usernames(body.usernames, AccountType.REFEREE, "裁判"):
             if aid not in t.referee_ids:
                 t.referee_ids.append(aid)
@@ -257,7 +264,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态 / 账号不存在或角色不符"},
+            400: {"description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"},
         },
     )
     def add_directors(
@@ -267,6 +274,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require_draft(tournament_id)
+        self._reject_default(t)
         for aid in self._resolve_usernames(
             body.usernames, AccountType.DIRECTOR, "导播"
         ):
@@ -284,7 +292,9 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非 DRAFT 状态 / 长度不符 / 含非池内 id / 存在重复"},
+            400: {
+                "description": "非 DRAFT 状态 / 默认赛事 / 长度不符 / 非池内 id / 重复"
+            },
         },
     )
     def set_seeds(
@@ -294,6 +304,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> TournamentOut:
         t = self._require_draft(tournament_id)
+        self._reject_default(t)
         if len(body.seed_order) != len(t.participant_ids):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "种子序长度须等于参赛选手数"
@@ -321,7 +332,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "状态不符 / 选手不足 / 该赛制暂未实现"},
+            400: {"description": "状态不符 / 默认赛事 / 选手不足 / 该赛制暂未实现"},
             503: {"description": "赛程引擎未就绪"},
         },
     )
@@ -331,6 +342,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> BracketView:
         t = self._require(tournament_id)
+        self._reject_default(t)
         if t.status != TournamentStatus.DRAFT:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "仅 DRAFT 状态赛事可生成赛程"
@@ -352,7 +364,7 @@ class TournamentController(Routable):
         responses={
             **_RESP_AUTH,
             404: {"description": "赛事不存在"},
-            400: {"description": "非瑞士轮 / 上一轮未完成 / 超过总轮数"},
+            400: {"description": "非瑞士轮 / 默认赛事 / 上一轮未完成 / 超过总轮数"},
         },
     )
     def start_next_round(
@@ -361,6 +373,7 @@ class TournamentController(Routable):
         _: Account = Depends(require_admin),
     ) -> BracketView:
         t = self._require(tournament_id)
+        self._reject_default(t)
         if t.format != TournamentFormat.SWISS:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "仅瑞士轮赛制支持生成下一轮"
@@ -507,6 +520,12 @@ class TournamentController(Routable):
                 status.HTTP_400_BAD_REQUEST, "仅 DRAFT 状态赛事可修改成员"
             )
         return t
+
+    @staticmethod
+    def _reject_default(t: Tournament) -> None:
+        """默认赛事是孤立比赛的永久容器：一切变更操作（改字段/删/成员/赛程）禁入。"""
+        if t.id == DEFAULT_TOURNAMENT_ID:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "默认赛事不允许该操作")
 
     def _resolve_usernames(
         self, usernames: list[str], expected: AccountType, label: str

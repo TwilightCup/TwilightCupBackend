@@ -9,8 +9,11 @@ from twilightcupbackend.datatypes import AttemptStatus
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 40):  # type: ignore[no-untyped-def]
@@ -36,6 +39,7 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
     ws.send_json(
         {
             "type": "level_time_upload",
+            "utc_ms": 1700000000002,
             "round_id": rid,
             "level_index": index,
             "this_level_ms": ms,
@@ -44,7 +48,12 @@ def _upload(ws, rid: str, index: int, ms: int) -> None:  # type: ignore[no-untyp
 
 
 def _skip(ws, rid: str, index: int) -> None:  # type: ignore[no-untyped-def]
-    ws.send_json({"type": "attempt_skip", "round_id": rid, "attempt_index": index})
+    ws.send_json({
+        "type": "attempt_skip",
+        "round_id": rid,
+        "attempt_index": index,
+        "utc_ms": 1700000000002,
+    })
 
 
 def _status_of(ws_a, expect: int, max_msgs: int = 60):  # type: ignore[no-untyped-def]
@@ -70,7 +79,7 @@ def test_skipped_attempt_recorded(world) -> None:  # type: ignore[no-untyped-def
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rid = _drive_to_round(ws_r, ws_a)
         _upload(ws_a, rid, 1, 12345)
         _skip(ws_a, rid, 2)
@@ -92,7 +101,7 @@ def test_skip_then_upload_overwrites(world) -> None:  # type: ignore[no-untyped-
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rid = _drive_to_round(ws_r, ws_a)
         _skip(ws_a, rid, 1)
         _upload(ws_a, rid, 1, 5000)
@@ -110,7 +119,7 @@ def test_repeat_skip_idempotent(world) -> None:  # type: ignore[no-untyped-def]
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rid = _drive_to_round(ws_r, ws_a)
         _skip(ws_a, rid, 1)
         _skip(ws_a, rid, 1)
@@ -127,7 +136,7 @@ def test_skip_persisted_to_round_record(world) -> None:  # type: ignore[no-untyp
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rid = _drive_to_round(ws_r, ws_a)
         _upload(ws_a, rid, 1, 1000)
         _skip(ws_a, rid, 2)
@@ -148,7 +157,7 @@ def test_multi_round_skip_ignored(world) -> None:  # type: ignore[no-untyped-def
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         rid = _drive_to_round(ws_r, ws_a, "ML1")
         _skip(ws_a, rid, 1)
         # 无 player_status 广播（被过滤），直接查库确认无 attempts

@@ -41,7 +41,7 @@ class MappoolController(Routable):
             self.db.mappools.insert(doc)
         except DuplicateKeyError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, "图池名已存在") from exc
-        return MappoolOut.from_doc(doc, self.storage)
+        return MappoolOut.from_doc(doc, self.storage, self.db)
 
     @get(
         "",
@@ -59,7 +59,7 @@ class MappoolController(Routable):
     ) -> list[MappoolOut]:
         docs = self.db.mappools.find()
         docs.sort(key=lambda d: d.created_at, reverse=True)
-        return [MappoolOut.from_doc(d, self.storage) for d in docs]
+        return [MappoolOut.from_doc(d, self.storage, self.db) for d in docs]
 
     @get(
         "/{mappool_id}",
@@ -79,7 +79,7 @@ class MappoolController(Routable):
         doc = self.db.mappools.get(mappool_id)
         if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "图池不存在")
-        return MappoolOut.from_doc(doc, self.storage)
+        return MappoolOut.from_doc(doc, self.storage, self.db)
 
     @patch(
         "/{mappool_id}",
@@ -110,7 +110,7 @@ class MappoolController(Routable):
             self.db.mappools.replace(doc)
         except DuplicateKeyError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, "图池名已存在") from exc
-        return MappoolOut.from_doc(doc, self.storage)
+        return MappoolOut.from_doc(doc, self.storage, self.db)
 
     @delete(
         "/{mappool_id}",

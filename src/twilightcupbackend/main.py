@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import asynccontextmanager
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -45,6 +49,26 @@ _TAGS: list[dict[str, str]] = [
         "name": "logs",
         "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细",
     },
+    {
+        "name": "bilibili",
+        "description": "B站直播流同源代理（导播选手画面）：以 B站要求的请求头拉取 "
+        "HTTP-FLV 并转发给前端 mpegts.js",
+    },
+    {
+        "name": "youtube",
+        "description": "YouTube 直播 HLS 同源代理（导播选手画面）：后端解析直播 "
+        "HLS 地址并转发播放列表与分片，前端用 hls.js 播放，绕开 iframe",
+    },
+    {
+        "name": "speedrun",
+        "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与"
+        "项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），"
+        "支持 auto/cached/refresh 三模式（前端 SWR）",
+    },
+    {
+        "name": "ct-tags",
+        "description": "词条库（管理员）：维护 CT 类别图池可选的全局词条",
+    },
 ]
 
 
@@ -56,11 +80,12 @@ def create_app(db: DBController | None = None) -> FastAPI:
     ctl = db if db is not None else DBController(settings)
     own_db = db is None  # 是否由本次创建（决定是否在关闭时释放）
     registry = MatchRegistry()
+    storage = Storage(settings)
     connection_manager = ConnectionManager(ctl, registry, settings)
     connection_manager.command_router = CommandHandler(connection_manager)
-    connection_manager.match_engine = MatchEngine(connection_manager, ctl)
+    # storage 传入引擎：WS 下发的回合 pick 签展示图公开 URL（REST 输出层同口径）
+    connection_manager.match_engine = MatchEngine(connection_manager, ctl, storage)
     connection_manager.tournament_engine = TournamentEngine(ctl, connection_manager)
-    storage = Storage(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -74,6 +99,12 @@ def create_app(db: DBController | None = None) -> FastAPI:
                     "ensure_indexes 失败（Mongo 可能未就绪）。", exc_info=True
                 )
             try:
+                ctl.ensure_default_tournament()
+            except Exception:
+                logger.warning(
+                    "默认赛事 seed 失败（Mongo 可能未就绪）。", exc_info=True
+                )
+            try:
                 storage.ensure_bucket()
             except Exception:
                 logger.warning(
@@ -85,7 +116,16 @@ def create_app(db: DBController | None = None) -> FastAPI:
         app.state.registry = registry
         app.state.connection_manager = connection_manager
         app.state.storage = storage
-        yield
+        align_watchdog = asyncio.create_task(
+            connection_manager.watch_align_authorities()
+        )
+        try:
+            yield
+        finally:
+            align_watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await align_watchdog
+            await connection_manager._flush_align_notifications()
         if own_db:
             ctl.close()
         logger.info("TwilightCup backend shutting down.")
@@ -120,10 +160,20 @@ def create_app(db: DBController | None = None) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        if request.url.path.endswith("/stream-links") and isinstance(exc.detail, dict):
+            return JSONResponse(
+                status_code=exc.status_code, content={"detail": exc.detail}
+            )
         # 错误体约定 {"msg": ...}：前端 extractMsg 读 msg 最稳（亦兼容旧 detail）。
+        # CodedHTTPException 额外携带稳定字符串 code（如登录的
+        # ENDPOINT_FORBIDDEN），前端可按 code 分支/i18n；普通异常无 code 字段。
         detail = exc.detail
         msg = detail if isinstance(detail, str) else "请求有误"
-        return JSONResponse(status_code=exc.status_code, content={"msg": msg})
+        body: dict[str, str] = {"msg": msg}
+        code = getattr(exc, "code", None)
+        if isinstance(code, str):
+            body["code"] = code
+        return JSONResponse(status_code=exc.status_code, content=body)
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -131,6 +181,20 @@ def create_app(db: DBController | None = None) -> FastAPI:
         return JSONResponse(
             status_code=500, content={"code": 500, "msg": "内部服务器错误"}
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception(request: Request, exc: RequestValidationError):
+        if request.url.path.endswith("/stream-links"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "stream_links_invalid",
+                        "message": "Invalid stream links",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
 
     register_routes(app, ctl, settings)
     register_ws(app)

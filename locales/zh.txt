@@ -31,6 +31,7 @@ error.no_running_match_wait = 暂无进行中的比赛，请等待裁判开始
 error.not_in_match = 该账号未参与此比赛
 error.match_missing = 比赛不存在
 error.match_ended = 该比赛已结束
+error.match_readonly = 比赛已结束，当前为只读查看
 error.seat_not_assigned = 该账号未被指派为此比赛的席位
 error.seat_mismatch = 该账号未被指派为此比赛的 {seat}
 error.match_paused = 比赛已暂停，无法操作
@@ -40,6 +41,10 @@ error.wrong_seat = 仅 {seat} 可执行此操作
 error.players_only = 仅选手可执行此操作
 error.unimplemented = 暂未实现的消息类型：{type}
 
+# --- 座席连接状态（seat_state 广播之外的显式提示）---
+seat.online = {name}（{seat}）已连接
+seat.offline = {name}（{seat}）已断开连接
+
 # --- 暂停/恢复 ---
 pause.message = 比赛已暂停
 resume.message = 比赛已恢复
@@ -48,13 +53,16 @@ resume.message = 比赛已恢复
 prep.phase_error = 当前阶段（{phase}）无法进入准备
 prep.score_decided = 比分已达取胜分数，请结束比赛
 prep.started = 准备阶段开始，选手就绪后输入 !ready
+prep.hint = 准备阶段进行中 — 输入 !ready 准备
 start.only_prep = 仅准备阶段可手动开始
 start.no_pick = 开始前请先选定选图
 countdown.intro_auto = 双方已就绪，{delay} 秒后自动开始…
 countdown.intro_manual = 裁判已开始，{delay} 秒后开始比赛…
 countdown.cancelled = 自动开始倒计时已取消
 pick.not_in_mappool = 选图不在图池中：{code}
+pick.phase_error = 当前阶段（{phase}）无法选图
 pick.selected = 裁判选图：{code} - {name}{tags}{retry}
+pick.current_hint = 当前选图：{code} - {name}{tags}{retry}
 pick.tags_category = 类别 {category} 的选图不能携带词条：{code}
 pick.tags_too_many = 词条过多（上限 {limit}）：{tags}
 pick.tags_invalid = 词条无效：{tags}
@@ -62,10 +70,16 @@ pick.tags_conflict = 词条冲突：Checkpoint 与 No Checkpoint
 pick.retry_required = 单关 {code}（{category}）必须指定重试次数
 pick.retry_min = 重试次数必须 ≥ 1：{value}
 pick.retry_not_allowed = 选图 {code}（类别 {category}）使用图池重试次数，不可覆盖
+
+# --- 预载门控（合集提前下发）---
+preload.failed = {seat}预载失败{detail}，回合开始后将回退标准加载
+preload.timeout_force = 预载等待超时，强制开始回合
+preload.manual_skip = 裁判跳过预载等待，强制开始回合
 round.invalid_pick = 选图无效，无法开始回合
 round.started = 回合开始！当前选图：{code} - {name}
 forfeit.done = {player} 弃权（{reason}）
 judging.await = 双方已完成，等待裁判判定
+score.update = {player_a} {a} : {b} {player_b}
 round.not_found = 回合不存在
 round.not_current = 非当前回合，无法终止
 round.terminated = 裁判终止了回合：{reason}
@@ -74,5 +88,6 @@ verdict.not_verdicted = 该回合尚未判定
 match.already_ended = 比赛已结束
 match.no_winner = 尚未决出胜方，无法结束比赛
 match.ended = 比赛结束，胜方 {winner}
+match.winner_decided = 胜方已决出（{winner}），等待裁判/管理员手动结束；所有选手和导播断开后将自动结束
 match.admin_ended = 管理员结束了比赛
 rematch.announce = 回合平局，进入重赛 — 请再次 !ready

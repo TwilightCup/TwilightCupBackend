@@ -1,0 +1,9 @@
+**
+!runtime-requirements.txt
+!src/
+!src/**
+!locales/
+!locales/**
+!start.py
+**/.env*
+**/__pycache__/

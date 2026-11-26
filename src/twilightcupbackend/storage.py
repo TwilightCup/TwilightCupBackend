@@ -1,21 +1,24 @@
-"""对象存储封装（MinIO / S3 兼容）。
+"""对象存储封装（MinIO / SeaweedFS 等 S3 兼容网关）。
 
-负责静态资源（图池 logo 等）的上传与公开访问。桶设为公开读，前端通过
-nginx 反代的固定 URL（``S3_PUBLIC_BASE_URL`` + key）访问——不走预签名，
-URL 永久有效，便于 https 统一入口与缓存。
+负责静态资源（图池 logo 等）的上传与公开访问。桶公开读（网关支持桶策略
+时尽力设置，SeaweedFS 等默认匿名开放），前端通过 nginx 反代的固定 URL
+（``S3_PUBLIC_BASE_URL`` + key）访问——不走预签名，URL 永久有效，便于
+https 统一入口与缓存。
 """
 
 from __future__ import annotations
 
 import json
+from logging import getLogger
 from uuid import uuid4
 
 from minio import Minio
-from minio.error import S3Error
 
 from .config import Settings
 
-# 桶公开读策略（允许任意人 GET 桶内对象）
+_logger = getLogger(__name__)
+
+# 桶公开读策略（允许任意人 GET 桶内对象）——仅对支持桶策略的网关（如 MinIO）生效
 _PUBLIC_READ_POLICY = {
     "Version": "2012-10-17",
     "Statement": [
@@ -30,7 +33,7 @@ _PUBLIC_READ_POLICY = {
 
 
 class Storage:
-    """MinIO/S3 对象存储封装（桶公开读，固定 URL 访问）。"""
+    """S3 兼容对象存储封装（桶公开读，固定 URL 访问）。"""
 
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.s3_bucket
@@ -44,17 +47,21 @@ class Storage:
         )
 
     def ensure_bucket(self) -> None:
-        """幂等创建桶并设公开读策略（应用启动时调用）。"""
+        """幂等创建桶并尽力设公开读策略（应用启动时调用）。
+
+        部分 S3 网关（如 SeaweedFS）不支持 PutBucketPolicy（501
+        NotImplemented）且默认匿名开放——策略失败仅记调试日志，不阻断启动；
+        桶创建失败则正常上抛，由 lifespan 记 warning（与 Mongo 容错风格一致）。
+        """
+        if not self._client.bucket_exists(self._bucket):
+            self._client.make_bucket(self._bucket)
         try:
-            if not self._client.bucket_exists(self._bucket):
-                self._client.make_bucket(self._bucket)
             policy = json.dumps(_PUBLIC_READ_POLICY, separators=(",", ":")).replace(
                 "{bucket}", self._bucket
             )
             self._client.set_bucket_policy(self._bucket, policy)
-        except S3Error:
-            # 测试/未就绪环境宽容处理，不阻断启动
-            pass
+        except Exception:
+            _logger.debug("set_bucket_policy 失败（网关可能不支持）。", exc_info=True)
 
     def gen_key(self, prefix: str, suffix: str) -> str:
         """生成对象 key，如 ``logos/<uuid>.png``。"""

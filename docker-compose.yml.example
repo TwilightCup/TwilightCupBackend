@@ -1,0 +1,15 @@
+services:
+  backend:
+    build: .
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      S3_ENDPOINT: seaweedfs:8333
+    ports:
+      - "${BACKEND_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-8100}:8100"
+    restart: "no"
+
+networks:
+  default:
+    external: true
+    name: ${TWILIGHT_NETWORK:-twilight_cup_default}

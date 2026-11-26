@@ -17,8 +17,11 @@ from twilightcupbackend.datatypes import (
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def test_sessions_isolated(world) -> None:  # type: ignore[no-untyped-def]
@@ -63,8 +66,8 @@ def test_sessions_isolated(world) -> None:  # type: ignore[no-untyped-def]
         client.websocket_connect(f"/ws/{tokens1['pa']}") as ws_a1,
         client.websocket_connect(f"/ws/{tok2['pa']}") as ws_a2,
     ):
-        _drain(ws_a1, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a1, 6)
+        _drain(ws_a2, 6)
         # 比赛1 的选手发言
         ws_a1.send_json({"type": "chat", "text": "in-session-1"})
         echo1 = ws_a1.receive_json()
@@ -112,8 +115,8 @@ def test_two_sessions_chat_persisted_separately(world) -> None:  # type: ignore[
         client.websocket_connect(f"/ws/{tokens1['pa']}") as ws_a1,
         client.websocket_connect(f"/ws/{issue_token(pa2, settings)}") as ws_a2,
     ):
-        _drain(ws_a1, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a1, 6)
+        _drain(ws_a2, 6)
         ws_a1.send_json({"type": "chat", "text": "s1-msg"})
         ws_a1.receive_json()
         ws_a2.send_json({"type": "chat", "text": "s2-msg"})
@@ -121,5 +124,6 @@ def test_two_sessions_chat_persisted_separately(world) -> None:  # type: ignore[
 
     s1_msgs = db.chat_messages.find_by_match(session1.id)
     s2_msgs = db.chat_messages.find_by_match(session2.id)
-    assert [m.text for m in s1_msgs] == ["s1-msg"]
-    assert [m.text for m in s2_msgs] == ["s2-msg"]
+    # 座席连接提示以系统消息落库；聊天隔离断言只看用户消息。
+    assert [m.text for m in s1_msgs if not m.is_system] == ["s1-msg"]
+    assert [m.text for m in s2_msgs if not m.is_system] == ["s2-msg"]

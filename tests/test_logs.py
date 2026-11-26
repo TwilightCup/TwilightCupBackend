@@ -6,8 +6,11 @@ from twilightcupbackend.connection_manager import normalize_draft
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -39,13 +42,27 @@ def test_log_endpoints(world) -> None:  # type: ignore[no-untyped-def]
             _drain(ws, 5)
         rid = _drive_to_round(ws_r, ws_a)
         ws_a.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 1000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 1000,
+                "utc_ms": 1700000000001,
+            }
         )
         ws_b.send_json(
-            {"type": "project_complete", "round_id": rid, "final_total_ms": 2000}
+            {
+                "type": "project_complete",
+                "round_id": rid,
+                "final_total_ms": 2000,
+                "utc_ms": 1700000000001,
+            }
         )
         _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4)
-        ws_r.send_json({"type": "referee_verdict", "round_id": rid, "verdict": 1})
+        ws_r.send_json({
+            "type": "referee_verdict",
+            "round_id": rid,
+            "verdict": 1,
+        })
         _recv_until(ws_r, lambda m: m["type"] == "cumulative_score")
 
     h = {"Authorization": f"Bearer {tokens['ref']}"}

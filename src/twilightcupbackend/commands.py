@@ -31,7 +31,9 @@ class CommandHandler:
     async def __call__(self, conn: Connection, text: str) -> bool:
         parts = text[1:].split(None, 1)
         if not parts or not parts[0]:
-            await self.cm.system_message(conn.match_id, self.cm.tr(conn.match_id, "command.empty"))
+            await self.cm.system_message(
+                conn.match_id, self.cm.tr(conn.match_id, "command.empty")
+            )
             return True
         name = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -228,7 +230,9 @@ class CommandHandler:
                 conn,
                 SrvError(
                     code=400,
-                    msg=self.cm.tr(conn.match_id, "lang.unknown", id=arg, list=languages),
+                    msg=self.cm.tr(
+                        conn.match_id, "lang.unknown", id=arg, list=languages
+                    ),
                 ),
             )
             return

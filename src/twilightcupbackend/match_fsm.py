@@ -8,16 +8,20 @@
 
 from __future__ import annotations
 
+import asyncio
+from itertools import pairwise
 from logging import Logger, getLogger
+from math import dist
 from typing import TYPE_CHECKING, Literal
 
 from . import i18n, scoring
-from .controllers import player_running_conflict
+from .controllers import player_running_conflict, resolve_pick_logo_url
 from .datatypes import (
     Attempt,
     AttemptStatus,
     CollectionConfig,
     LevelTime,
+    Mappool,
     Match,
     MatchLog,
     MatchPhase,
@@ -35,20 +39,30 @@ from .datatypes import (
     now_ts,
 )
 from .protocol import (
+    PRELOAD_CAP,
+    PreloadReportStatus,
+    PreloadStatus,
     SrvCountdownAbort,
     SrvCountdownTick,
     SrvCumulativeScore,
     SrvError,
     SrvLevelTimeUpdate,
+    SrvLiveTime,
     SrvMatchEnd,
     SrvPhaseChange,
+    SrvPickAnnounced,
     SrvPlayerStatus,
+    SrvPreloadState,
     SrvReadyState,
     SrvRoundResult,
     SrvRoundStart,
     SrvRoundStartedBroadcast,
+    SrvSubsegmentGap,
+    SrvSubsegmentSample,
     SrvVerdictEdit,
 )
+from .storage import Storage
+from .stores import SubsegmentSample
 from .timer_service import CountdownTimer
 
 if TYPE_CHECKING:
@@ -66,30 +80,112 @@ CT_CATEGORY = "CT"
 # 可携带词条的类别：CT（裁判选定）、EX（裁判选定，不受词条 ban 约束——仅前端约束，
 # 后端不区分）、CP（前端自动传入 Checkpoint）
 TAGGED_CATEGORIES = frozenset({"CT", "EX", "CP"})
+# 图池编辑器「Glitchless」单选可置的类别（选图固有词条）：裁判选图时前端自动附带，
+# 属选图自身属性，不受比赛级 ct_tag_count 上限约束。
+GLITCHLESS_TAG = "Glitchless"
+GLITCHLESS_CATEGORIES = frozenset({"ML", "IL", "CP", "TB"})
 # 重试次数改由裁判选图时指定的类别（单关必填）
 REFEREE_RETRY_CATEGORIES = frozenset({"CT", "EX"})
+# 分段命中结算静默期（秒，settled-event 模型）：同一平面的穿越可多次上报，
+# 最后一次穿越后静默该时长无再穿越即结算广播（有效时刻取最后一次穿越，
+# 擦边往返的早触发会被真实穿越顶掉）。测试可 monkeypatch 调小。
+SUBSEGMENT_SETTLE_QUIET_S = 0.5
+# 每平面保留的穿越事件数上限（防客户端异常刷量；保留最新，旧的淘汰——
+# 迟到的真实穿越必须能进列表）。
+SUBSEGMENT_HIT_EVENTS_CAP = 8
+# 折返重访会话的开启门槛（毫秒）：已结算低键的再次穿越距该席最近一次穿越
+# 事件 ≥ 该值才视为「失败折返重来」的真实重访（坠落 + 3s 苏醒复活本身已
+# 超阈）；更近的视为曲折路线的绕行回声，维持丢弃。会话期间低键照常结算
+# 广播（游标不回退），重新追平最远进度即结束。
+SUBSEGMENT_REOPEN_MIN_GAP_MS = 3000
+# 陈旧平面回路识别的空间半径（米）：采样未携带 plane_radius 时回退使用。
+# 与客户端 Subsegment.PlaneRadius 默认值一致；若客户端携带 plane_radius，
+# 则以该值为准。
+SUBSEGMENT_LOOPBACK_RADIUS = 50.0
+# 判定「失败折返重来」所需的相邻采样位移阈值（米）：采样序列中出现超过该
+# 阈值的位置跳变视为死亡/复活传送，该次低键穿越是真实重访而非路线自然
+# 回路，不应被陈旧平面识别拦截。正常 1Hz 移动/坠落远小于该阈值；测试可
+# monkeypatch 调小。
+SUBSEGMENT_RESPAWN_JUMP_METERS = 100.0
+
+
+def _ct_category_tags(mappool: Mappool) -> list[str] | None:
+    """取图池 CT 类别显式配置的支持词条；旧图池未配置时返回 None（走全局内置回退）。"""
+    for cat in mappool.categories:
+        if cat.name.strip().upper() == CT_CATEGORY:
+            return cat.ct_tags
+    return None
+
+
+def _inherent_pick_tags(pick: Pick) -> set[str]:
+    """选图固有词条（图池编辑器「Glitchless」单选写入 Pick.tag）。
+
+    仅 ML/IL/CP/TB 类别的 Glitchless 生效；其余类别或词条不视为固有。
+    """
+    if pick.category not in GLITCHLESS_CATEGORIES:
+        return set()
+    raw = pick.tag or ""
+    return {t.strip() for t in raw.split(",") if t.strip() == GLITCHLESS_TAG}
+
+
+def _with_inherent_tags(pick: Pick, tags: list[str]) -> list[str]:
+    """把选图固有词条（Glitchless）并入裁判提交词条（幂等，保序追加）。
+
+    服务端兜底：图池选图置了 Glitchless 就必然随选图下发，不依赖裁判端
+    是否自动附带（降级手动选图 / 旧客户端同样生效）。
+    """
+    inherent = _inherent_pick_tags(pick)
+    if not inherent:
+        return tags
+    merged = list(tags)
+    for tag in sorted(inherent):
+        if tag not in merged:
+            merged.append(tag)
+    return merged
 
 
 def _validate_pick_tags(
-    pick: Pick, tags: list[str], limit: int
+    pick: Pick,
+    tags: list[str],
+    limit: int,
+    ct_tags: list[str] | None = None,
 ) -> tuple[str, dict[str, object]] | None:
     """校验裁判随选图提交的词条；违规返回 (消息键, 参数)，否则 None。
 
     规则（backend-ct-pick-tags §2.1，扩展到 CT/EX/CP）：仅这三类别可携带、
-    数量 ≤ 本场 ct_tag_count、枚举内（单关额外允许 Achievement）、
-    Checkpoint 与 No Checkpoint 互斥。
+    数量 ≤ 本场 ct_tag_count、词条在图池 CT 类别支持范围内（旧图池回退内置
+    枚举，单关额外允许 Achievement）、Checkpoint 与 No Checkpoint 互斥。
+
+    扩展（图池 Glitchless 固有词条）：ML/IL/CP/TB 选图置了 Glitchless 时，
+    裁判选图自动附带该词条；它属选图自身属性，**不计入 ct_tag_count 上限**，
+    非固有类别的其它词条仍照旧拒绝。
     """
     if not tags:
         return None
-    if pick.category not in TAGGED_CATEGORIES:
-        return "pick.tags_category", {"category": pick.category, "code": pick.code}
-    if len(tags) > limit:
+    inherent = _inherent_pick_tags(pick)
+    # 固有词条（Glitchless）不占用比赛级词条上限
+    counted = [t for t in tags if t not in inherent]
+    if len(counted) > limit:
         return "pick.tags_too_many", {"limit": limit, "tags": tags}
-    allowed = (
-        CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
-        if pick.type == PickType.SINGLE
-        else CT_TAG_VALUES
-    )
+    if pick.category in TAGGED_CATEGORIES:
+        if pick.category == CT_CATEGORY and ct_tags is not None:
+            allowed = set(ct_tags)
+            if pick.type == PickType.SINGLE:
+                allowed |= CT_TAG_SINGLE_ONLY
+        else:
+            allowed = (
+                CT_TAG_VALUES | CT_TAG_SINGLE_ONLY
+                if pick.type == PickType.SINGLE
+                else CT_TAG_VALUES
+            )
+        # 固有词条始终允许（即便未被图池 CT 类别列出）
+        allowed |= inherent
+    else:
+        # 非词条类别：无固有词条时维持原语义（类别不能携带词条）
+        if not inherent:
+            return "pick.tags_category", {"category": pick.category, "code": pick.code}
+        # 有固有词条（Glitchless）时仅接受该固有词条
+        allowed = inherent
     for tag in tags:
         if tag not in allowed:
             return "pick.tags_invalid", {"tags": tag}
@@ -127,10 +223,14 @@ class MatchEngine:
         self,
         cm: ConnectionManager,
         db: DBController,
+        storage: Storage | None = None,
         logger: Logger | None = None,
     ) -> None:
         self.cm = cm
         self.db = db
+        # 对象存储（可选）：WS 下发的回合 pick 签展示图公开 URL（pick 自有优先、
+        # 按合集关卡回退），与 REST 输出层（MatchOut/MappoolOut）同口径
+        self.storage = storage
         self.logger = logger or getLogger("MatchEngine")
 
     # ------------------------------------------------------------------
@@ -167,6 +267,13 @@ class MatchEngine:
         self.db.system_events.insert(
             SystemEvent(match_id=match_id, kind=kind, payload=payload)
         )
+
+    def _username_of(self, account_id: str | None) -> str:
+        """account_id → 登录用户名（score 消息标识选手用；查不到返回空串）。"""
+        if not account_id:
+            return ""
+        acc = self.db.accounts.get(account_id)
+        return acc.username if acc else ""
 
     def save_draft_snapshot(self, store: MatchStore, snapshot: dict | None) -> None:
         """持久化 ban/pick/protect 草稿快照到 match_log（见 backend-banpick-persist）。
@@ -223,6 +330,8 @@ class MatchEngine:
         store.pending_pick_code = None
         store.pending_pick_tags = []
         store.pending_pick_retry = None
+        store.pick_announced = None
+        store.reset_subsegments()  # 上回合分段采样随之作废（回合级数据，不持久化）
         await self.cm.broadcast_match(match_id, SrvPhaseChange(phase=MatchPhase.PREP))
         await self.cm.system_message(
             match_id,
@@ -233,6 +342,7 @@ class MatchEngine:
             match_id,
             SrvReadyState(a_ready=store.a_ready, b_ready=store.b_ready),
         )
+        await self._reset_preload(store)
 
     def _players_conflict(self, match: Match) -> str | None:
         """单场强制：本场选手若已在另一场 RUNNING 比赛中，返回冲突文案；否则 None。
@@ -257,7 +367,29 @@ class MatchEngine:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        # 倒计时/回合进行中拒绝改图（预载门控 R3.2：防倒计时中改图与预载赛跑）；
+        # PREP/IDLE/ROUND_END 保持开放（词条校验本身与阶段无关）
+        if store.phase in (MatchPhase.COUNTDOWN, MatchPhase.IN_ROUND):
+            await self.cm.send_to_seat(
+                match_id,
+                Seat.REFEREE,
+                SrvError(
+                    code=400,
+                    msg=self.cm.tr(
+                        match_id, "pick.phase_error", phase=store.phase.name
+                    ),
+                ),
+            )
+            return
         pick = store.match.mappool.get_pick(pick_code)
+        self.logger.info(
+            "[pick-tags] inbound match=%s code=%s category=%s stored_tag=%r request_tags=%r",
+            match_id,
+            pick_code,
+            pick.category if pick is not None else None,
+            pick.tag if pick is not None else None,
+            tags,
+        )
         if pick is None:
             await self.cm.send_to_seat(
                 match_id,
@@ -269,21 +401,44 @@ class MatchEngine:
             )
             return
         tags = tags or []
+        # 固有 Glitchless 服务端兜底并入：图池置了该标签就必然随选图下发
+        tags = _with_inherent_tags(pick, tags)
+        self.logger.info(
+            "[pick-tags] effective match=%s code=%s category=%s stored_tag=%r effective_tags=%r",
+            match_id,
+            pick_code,
+            pick.category,
+            pick.tag,
+            tags,
+        )
         # 词条 / 重试次数校验（backend-ct-pick-tags §2.1）：客户端已拦截但不可信任
-        error = _validate_pick_tags(pick, tags, store.match.ct_tag_count)
+        error = _validate_pick_tags(
+            pick,
+            tags,
+            store.match.ct_tag_count,
+            _ct_category_tags(store.match.mappool),
+        )
         if error is None:
             error = _validate_pick_retry(pick, retry_count)
         if error is not None:
             key, kw = error
             await self.cm.send_to_seat(
-                match_id, Seat.REFEREE, SrvError(code=400, msg=self.cm.tr(match_id, key, **kw))
+                match_id,
+                Seat.REFEREE,
+                SrvError(code=400, msg=self.cm.tr(match_id, key, **kw)),
             )
             return
         store.pending_pick_code = pick_code
         store.pending_pick_tags = tags
         store.pending_pick_retry = retry_count
+        # 改图（含重新应用）旧预载必然作废 → 重置并广播，再提前下发新合集
+        await self._reset_preload(store)
         suffix = f" [{', '.join(tags)}]" if tags else ""
-        retry_suffix = f" x{retry_count}" if retry_count is not None else ""
+        # 重试后缀用生效值：CT/EX 单关为裁判指定值，其余单关沿用图池预设
+        # （与 _pending_pick_enriched / pick_announced 的合并口径一致；
+        # 多关 retry 恒 None 不显示）
+        effective_retry = retry_count if retry_count is not None else pick.retry_count
+        retry_suffix = f" x{effective_retry}" if effective_retry is not None else ""
         await self.cm.system_message(
             match_id,
             self.cm.tr(
@@ -296,19 +451,29 @@ class MatchEngine:
             ),
             kind="pick",
         )
+        # 合集提前下发（预览；round_start 仍是唯一权威）。全体成员（两选手席 +
+        # 裁判 + 导播），选手端以最新一次为准（丢弃旧预载）；快照留存供
+        # PREP 断线重连握手重放。
+        announced = SrvPickAnnounced(
+            pick_code=pick.code,
+            pick=self._pending_pick_enriched(store, pick),
+            collection=self._expand_collection(pick.collection),
+        )
+        store.pick_announced = announced
+        await self.cm.broadcast_match(match_id, announced)
 
     # ------------------------------------------------------------------
     # 就绪 → 倒计时
     # ------------------------------------------------------------------
 
     async def on_ready_changed(self, match_id: str) -> None:
-        """``!ready`` 切换后调用：双就绪启动 auto 倒计时，否则中断 auto 倒计时。"""
+        """``!ready`` 切换后调用：双就绪走预载门控的自动开始检查，否则中断倒计时。"""
         store = self.cm.registry.get(match_id)
         if store is None:
             return
         both = store.a_ready and store.b_ready
         if store.phase == MatchPhase.PREP and both:
-            await self._start_countdown(store, "auto")
+            await self._auto_start_check(store)
         elif (
             store.phase == MatchPhase.COUNTDOWN
             and store.countdown_source == "auto"
@@ -327,11 +492,18 @@ class MatchEngine:
                 SrvError(code=400, msg=self.cm.tr(match_id, "start.only_prep")),
             )
             return
+        # 手动开始无条件放行（现状）；存在预载未完/等待中席位时向全体播提示
+        if self._preload_incomplete(store):
+            await self.cm.system_message(
+                store.id, self.cm.tr(store.id, "preload.manual_skip"), kind="preload"
+            )
         await self._start_countdown(store, "manual")
 
     async def _start_countdown(self, store: MatchStore, source: str) -> None:
         if store.phase == MatchPhase.COUNTDOWN:
             return  # 已在倒计时
+        # 门控等待的超时计时器一并撤销（门控通过或手动强制两条路径都到这里）
+        await self._cancel_preload_gate_timer(store)
         if store.pending_pick_code is None:
             await self.cm.send_to_seat(
                 store.id,
@@ -355,11 +527,11 @@ class MatchEngine:
         match_id = store.id
 
         async def on_tick(remaining: int) -> None:
+            # 仅下发结构化倒计时 tick，不重复刷系统聊天消息（保留开局那条 intro）。
             await self.cm.broadcast_match(
                 match_id,
                 SrvCountdownTick(remaining_secs=remaining, source=source),  # type: ignore[arg-type]
             )
-            await self.cm.system_message(match_id, str(remaining), kind="countdown")
 
         async def on_zero() -> None:
             await self._on_countdown_zero(store)
@@ -381,11 +553,167 @@ class MatchEngine:
             store.id, SrvCountdownAbort(reason="player_unready")
         )
         await self.cm.broadcast_match(store.id, SrvPhaseChange(phase=MatchPhase.PREP))
+        # 倒计时中止回 PREP：预载状态随之重置（选手重新 ready 后重走门控）
+        await self._reset_preload(store)
 
     async def _on_countdown_zero(self, store: MatchStore) -> None:
         store.countdown_timer = None
         store.countdown_source = None
         await self._begin_round(store)
+
+    # ------------------------------------------------------------------
+    # 预载状态与开局门控（合集提前下发与预载门控 R2）
+    # ------------------------------------------------------------------
+
+    async def on_preload_report(
+        self,
+        match_id: str,
+        seat: Seat,
+        status: PreloadReportStatus,
+        detail: str | None,
+    ) -> None:
+        """选手端预载状态上报：更新并广播，失败告警，然后复查自动开始。"""
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        if store.phase != MatchPhase.PREP:
+            # 非 PREP 上报无意义（进入回合时状态已清场），静默忽略
+            return
+        if seat == Seat.PLAYER_A:
+            store.preload_a = status
+        else:
+            store.preload_b = status
+        await self.cm.broadcast_match(
+            store.id,
+            SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+        )
+        if status == "failed":
+            # 不阻塞开局（选手端 round_start 时回退标准加载路径），仅告警
+            suffix = f": {detail}" if detail else ""
+            await self.cm.system_message(
+                store.id,
+                self.cm.tr(
+                    store.id,
+                    "preload.failed",
+                    seat=i18n.seat_name(seat, self.cm.locale_for(store.id)),
+                    detail=suffix,
+                ),
+                kind="preload",
+            )
+            self._log_event(
+                store.id, "preload_failed", {"seat": seat.name, "detail": detail}
+            )
+        # 最后一份上报可能早于对手 ready：满足条件的瞬间立即复查，避免卡住
+        await self._auto_start_check(store)
+
+    async def _auto_start_check(self, store: MatchStore) -> None:
+        """双方就绪后的自动开始入口（ready 切换与 preload_report 共用）。
+
+        自动倒计时开始条件 = 双方 ready 且双方预载门控通过；门控不满足时
+        维持 PREP 并挂超时兜底计时器。
+        """
+        if store.phase != MatchPhase.PREP or not (store.a_ready and store.b_ready):
+            return
+        if store.pending_pick_code is None:
+            # 与 _start_countdown 的拒绝一致：提示裁判先选图（保留现状行为）
+            await self.cm.send_to_seat(
+                store.id,
+                Seat.REFEREE,
+                SrvError(code=400, msg=self.cm.tr(store.id, "start.no_pick")),
+            )
+            return
+        if self._preload_gate_ok(store):
+            await self._start_countdown(store, "auto")
+        else:
+            self._ensure_preload_gate_timer(store)
+
+    def _preload_gate_ok(self, store: MatchStore) -> bool:
+        """双方席位门控均通过才放行。"""
+        return all(
+            self._seat_gate_ok(store, seat, status)
+            for seat, status in (
+                (Seat.PLAYER_A, store.preload_a),
+                (Seat.PLAYER_B, store.preload_b),
+            )
+        )
+
+    @staticmethod
+    def _seat_gate_ok(store: MatchStore, seat: Seat, status: PreloadStatus) -> bool:
+        """单席位门控：done/na/failed 通过（failed 收到时已告警，不阻塞）；
+        in_progress 等待；absent 仅在该席位连接声明了预载能力（新版插件）时等待，
+        旧客户端/断线席位视为豁免（在途的非 absent 状态不受断线影响）。
+        """
+        if status in ("done", "na", "failed"):
+            return True
+        if status == "in_progress":
+            return False
+        conn = store.connections.get(seat)
+        return conn is None or PRELOAD_CAP not in conn.capabilities
+
+    def _preload_incomplete(self, store: MatchStore) -> bool:
+        """是否存在明确的预载未完信号（手动开始跳过提示的触发条件）。
+
+        任一席位 in_progress/failed，或门控等待计时器仍在走（双方 ready 但
+        有能力席位尚未上报）。纯 absent 且未在等待的常规手动开始不提示。
+        """
+        return (
+            store.preload_gate_timer is not None
+            or store.preload_a in ("in_progress", "failed")
+            or store.preload_b in ("in_progress", "failed")
+        )
+
+    def _ensure_preload_gate_timer(self, store: MatchStore) -> None:
+        """门控等待的超时兜底计时器；已计时则不重置（起点=首次进入等待的时刻）。
+
+        超时后强制开始（选手端 round_start 时回退标准加载）。配置 ≤0 视为
+        关闭兜底（只等门控通过或裁判手动开始）。
+        """
+        if store.preload_gate_timer is not None:
+            return
+        timeout = self.cm.settings.preload_gate_timeout
+        if timeout <= 0:
+            return
+
+        async def on_tick(remaining: int) -> None:  # 静默走秒，不广播
+            pass
+
+        async def on_zero() -> None:
+            store.preload_gate_timer = None
+            # 防御性复查：取消路径之外的局面变化（如等待中断连）兜住
+            if (
+                store.phase != MatchPhase.PREP
+                or not (store.a_ready and store.b_ready)
+                or store.pending_pick_code is None
+            ):
+                return
+            await self.cm.system_message(
+                store.id, self.cm.tr(store.id, "preload.timeout_force"), kind="preload"
+            )
+            self._log_event(
+                store.id,
+                "preload_gate_timeout",
+                {"a": store.preload_a, "b": store.preload_b},
+            )
+            await self._start_countdown(store, "auto")
+
+        timer = CountdownTimer(timeout, "preload_gate", on_tick, on_zero)
+        store.preload_gate_timer = timer
+        timer.start()
+
+    async def _cancel_preload_gate_timer(self, store: MatchStore) -> None:
+        if store.preload_gate_timer is not None:
+            await store.preload_gate_timer.cancel()
+            store.preload_gate_timer = None
+
+    async def _reset_preload(self, store: MatchStore) -> None:
+        """重置双方预载状态并广播（进 PREP / 改图 / 倒计时中止 / 回合开始）。"""
+        await self._cancel_preload_gate_timer(store)
+        store.preload_a = "absent"
+        store.preload_b = "absent"
+        await self.cm.broadcast_match(
+            store.id,
+            SrvPreloadState(a_status=store.preload_a, b_status=store.preload_b),
+        )
 
     # ------------------------------------------------------------------
     # 回合开始（回合内数据流由 M7 扩展）
@@ -409,6 +737,34 @@ class MatchEngine:
         lv = self.db.levels.get(level_id)
         return lv.name if lv is not None else level_id
 
+    def _pick_logo_url(self, pick: Pick) -> str | None:
+        """选图展示图公开 URL：pick 自有 logo 优先，无则按合集关卡回退
+        （终点关的 Level.logo，口径见 controllers.resolve_pick_logo_url）。"""
+        return resolve_pick_logo_url(pick, self.db, self.storage)
+
+    def _pending_pick_enriched(self, store: MatchStore, pick: Pick) -> Pick:
+        """按 pending 裁剪合并出下发的 pick（pick_announced 与 round_start 共用）。
+
+        回合 pick 快照冻结本回合词条与裁判指定的重试次数（图池原件不动；
+        见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
+        single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
+        Match.scoring_method 建赛时定、必填，恒非 None）。
+        logo_url 签展示图公开 URL（pick 自有 logo 优先，无则按合集关卡回退
+        Level.logo；导播场景展示图用，图池原件不动，REST 输出层同口径）。
+        """
+        return pick.model_copy(
+            update={
+                "tags": list(store.pending_pick_tags),
+                "retry_count": (
+                    store.pending_pick_retry
+                    if store.pending_pick_retry is not None
+                    else pick.retry_count
+                ),
+                "single_scoring": store.match.scoring_method.name.lower(),
+                "logo_url": self._pick_logo_url(pick),
+            }
+        )
+
     async def _begin_round(self, store: MatchStore) -> None:
         assert store.pending_pick_code is not None
         pick = store.match.mappool.get_pick(store.pending_pick_code)
@@ -421,22 +777,16 @@ class MatchEngine:
                 store.id, SrvPhaseChange(phase=MatchPhase.PREP)
             )
             return
+        # 回合开始后裁判独立计时器不再有意义：静默取消，不广播停止消息
+        if store.counter_timer is not None:
+            await store.counter_timer.cancel()
+            store.counter_timer = None
+        # 回合开始后预载状态不再有意义，清场
+        await self._reset_preload(store)
+        # 分段采样随新回合清零（重赛路径不经 begin_prep，此处兜底）
+        store.reset_subsegments()
 
-        # 回合 pick 快照冻结本回合词条与裁判指定的重试次数（图池原件不动；
-        # 见 backend-ct-pick-tags §2.2）。未指定重试（ML/IL 单关）沿用图池预设。
-        # single_scoring 随快照下发本场单关计分方式（LEADERBOARD_REQ §4.2-B；
-        # Match.scoring_method 建赛时定、必填，恒非 None）。
-        pick = pick.model_copy(
-            update={
-                "tags": list(store.pending_pick_tags),
-                "retry_count": (
-                    store.pending_pick_retry
-                    if store.pending_pick_retry is not None
-                    else pick.retry_count
-                ),
-                "single_scoring": store.match.scoring_method.name.lower(),
-            }
-        )
+        pick = self._pending_pick_enriched(store, pick)
 
         store.round_counter += 1
         record = RoundRecord(
@@ -472,9 +822,7 @@ class MatchEngine:
         )
         await self.cm.system_message(
             store.id,
-            self.cm.tr(
-                store.id, "round.started", code=pick.code, name=pick.name
-            ),
+            self.cm.tr(store.id, "round.started", code=pick.code, name=pick.name),
             kind="round_start",
         )
         await self.cm.broadcast_match(
@@ -511,10 +859,13 @@ class MatchEngine:
         this_level_ms: int,
         total_ms: int | None,
         invalid_reasons: list[str] | None = None,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -542,7 +893,9 @@ class MatchEngine:
             # （INVALID_ATTEMPT_REQ §4.3）
             new_attempt = Attempt(
                 index=level_index,
-                status=AttemptStatus.INVALID if invalid_reasons else AttemptStatus.VALID,
+                status=AttemptStatus.INVALID
+                if invalid_reasons
+                else AttemptStatus.VALID,
                 time_ms=this_level_ms,  # 保留（证据）
                 invalid_reasons=invalid_reasons or [],
             )
@@ -571,11 +924,18 @@ class MatchEngine:
         await self._broadcast_status(match_id, seat, state)
 
     async def on_attempt_skip(
-        self, match_id: str, seat: Seat, round_id: str, attempt_index: int
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        attempt_index: int,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -603,10 +963,13 @@ class MatchEngine:
         seat: Seat,
         round_id: str,
         final_total_ms: int | None,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         record = await self._require_active_round(store, round_id)
         if record is None:
             return
@@ -623,11 +986,18 @@ class MatchEngine:
         await self._maybe_to_judging(store, record)
 
     async def on_forfeit(
-        self, match_id: str, seat: Seat, round_id: str, reason: str
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        reason: str,
+        utc_ms: int | None = None,
     ) -> None:
         store = self.cm.registry.get(match_id)
         if store is None:
             return
+        if utc_ms is not None:
+            store.utc_timestamps[seat] = utc_ms  # 刷新裁判/导播时钟来源
         # 弃权即便对方仍在进行也可推进判定，但需当前回合匹配
         if store.current_round_id != round_id:
             return
@@ -651,6 +1021,302 @@ class MatchEngine:
         )
         self._log_event(match_id, "forfeit", {"seat": seat.name, "reason": reason})
         await self._maybe_to_judging(store, record)
+
+    async def on_subsegment_sample(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        seq: int,
+        t_ms: int,
+        px: float,
+        py: float,
+        pz: float,
+        dx: float,
+        dy: float,
+        dz: float,
+        plane_radius: float | None = None,
+    ) -> None:
+        """选手端分段采样上报：存档并转发给对方（其客户端据此建检测平面）。"""
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        # 仅多关回合（单关 level_index 是尝试序号，语义不同；客户端本就不发）
+        if record.pick_snapshot.type != PickType.MULTI:
+            return
+        key = (seat, level_index, seq)
+        if key in store.subsegments:  # 重复上报去重
+            return
+        store.subsegments[key] = SubsegmentSample(
+            level_index=level_index,
+            seq=seq,
+            t_ms=t_ms,
+            px=px,
+            py=py,
+            pz=pz,
+            dx=dx,
+            dy=dy,
+            dz=dz,
+            plane_radius=plane_radius,
+        )
+        # 只发对方 seat（裁判/导播消费 subsegment_gap 即可）；对方离线则仅存，
+        # 重连时由 on_reconnect_resync 按插入序补放
+        opp = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        await self.cm.send_to_seat(
+            match_id,
+            opp,
+            SrvSubsegmentSample(
+                seat=seat.name,
+                round_id=round_id,
+                level_index=level_index,
+                seq=seq,
+                t_ms=t_ms,
+                px=px,
+                py=py,
+                pz=pz,
+                dx=dx,
+                dy=dy,
+                dz=dz,
+            ),
+        )
+
+    async def on_subsegment_hit(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        seq: int,
+        t_ms: int,
+    ) -> None:
+        """选手穿越对方采样平面（同一平面可多次上报）：记录事件并调度静默结算。
+
+        结算（``_settle_subsegment``）后才广播时间差。低键穿越的两道门：
+        折返重访会话期间（``subsegment_revisiting``）照常接受；会话外距该席
+        最近一次穿越 ≥ ``SUBSEGMENT_REOPEN_MIN_GAP_MS`` 才重开会话——失败
+        折返的真实重访（画面随罚时成本单调增长）与几秒内的绕行回声由此分开。
+        """
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        if record.pick_snapshot.type != PickType.MULTI:
+            return
+        owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        owner_sample = store.subsegments.get((owner, level_index, seq))
+        if owner_sample is None:
+            return  # 引用的样本未知（乱序/对端断线丢样）→ 静默忽略
+        if self._is_loopback_revisit(
+            store, seat, level_index, owner_sample, t_ms
+        ):
+            # 路线自然回路再次经过陈旧平面：穿越方在空间上早已路过该点
+            # （且比采样方更早），此时 gap = hit_ms - sample_ms 会把领先
+            # 误播成大幅落后。直接丢弃，不记录、不调度、不广播。
+            return
+        key = (seat, level_index, seq)
+        k = (level_index, seq)
+        frontier = store.subsegment_frontier.get(seat)
+        # 该席最近一次穿越事件（被丢弃的回声同样刷新基线：持续绕行打不开会话）
+        last_t = store.subsegment_last_t.get(seat)
+        if last_t is None or t_ms > last_t:
+            store.subsegment_last_t[seat] = t_ms
+        if (
+            key not in store.subsegment_settle_tasks
+            and frontier is not None
+            and k <= frontier
+            and seat not in store.subsegment_revisiting
+        ):
+            # 已结算键的再次穿越（含 amend）：距最近穿越不足门槛 = 绕行回声
+            if last_t is not None and t_ms - last_t < SUBSEGMENT_REOPEN_MIN_GAP_MS:
+                return
+            if k < frontier:
+                store.subsegment_revisiting.add(seat)  # 折返重来了：开启会话
+        events = store.subsegment_hits.setdefault(key, [])
+        events.append(t_ms)
+        if len(events) > SUBSEGMENT_HIT_EVENTS_CAP:
+            del events[:-SUBSEGMENT_HIT_EVENTS_CAP]
+        self._schedule_settle(store, match_id, seat, level_index, seq)
+
+    def _is_loopback_revisit(
+        self,
+        store: MatchStore,
+        seat: Seat,
+        level_index: int,
+        owner_sample: SubsegmentSample,
+        t_ms: int,
+    ) -> bool:
+        """路线自然回路识别：穿越方再次经过陈旧平面，不产生时间差广播。
+
+        判据：穿越方在采样方留样之前就曾到达该平面位置（空间距离 ≤ 其检测
+        平面半径），且从那次到达直至本次穿越之间其采样轨迹连续（无死亡/
+        复活传送级的位置跳变）——即路线本身绕回了同一点。此类穿越若按
+        ``gap = hit_ms - sample_ms`` 广播，会把领先误播成大幅落后。
+
+        失败折返重来（坠落/复活后重新追平面）同样满足“早于采样方到过”，
+        但轨迹中存在超过 ``SUBSEGMENT_RESPAWN_JUMP_METERS`` 的位置跳变，
+        因此不会被拦截，仍走既有折返重访/结算逻辑。
+        """
+        samples = sorted(
+            (
+                s
+                for (s_seat, s_level, _), s in store.subsegments.items()
+                if s_seat == seat and s_level == level_index
+            ),
+            key=lambda s: s.t_ms,
+        )
+        if not samples:
+            return False
+        radius = self._subsegment_plane_radius(samples, t_ms)
+        earlier: SubsegmentSample | None = None
+        for sample in samples:
+            if sample.t_ms >= owner_sample.t_ms:
+                break
+            if (
+                dist(
+                    (sample.px, sample.py, sample.pz),
+                    (owner_sample.px, owner_sample.py, owner_sample.pz),
+                )
+                <= radius
+            ):
+                earlier = sample
+        if earlier is None:
+            return False
+        later = [s for s in samples if earlier.t_ms < s.t_ms <= t_ms]
+        if not later:
+            # 中间没有采样（断线丢样等）：保守不拦截，交给现有结算逻辑。
+            return False
+        path = [earlier, *later]
+        for prev, cur in pairwise(path):
+            if (
+                dist(
+                    (prev.px, prev.py, prev.pz),
+                    (cur.px, cur.py, cur.pz),
+                )
+                > SUBSEGMENT_RESPAWN_JUMP_METERS
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _subsegment_plane_radius(
+        samples: list[SubsegmentSample], t_ms: int
+    ) -> float:
+        """取该席在 t_ms 前最近一次上报的检测平面半径；缺省回退常量。"""
+        for sample in reversed(samples):
+            if sample.t_ms <= t_ms and sample.plane_radius is not None:
+                return sample.plane_radius
+        return SUBSEGMENT_LOOPBACK_RADIUS
+
+    def _schedule_settle(
+        self, store: MatchStore, match_id: str, seat: Seat, level_index: int, seq: int
+    ) -> None:
+        """（重）调度该平面的静默结算任务：新事件到达即重置静默窗。"""
+        key = (seat, level_index, seq)
+        stale = store.subsegment_settle_tasks.pop(key, None)
+        if stale is not None:
+            stale.cancel()
+        task = asyncio.get_running_loop().create_task(
+            self._settle_subsegment(match_id, seat, level_index, seq)
+        )
+        store.subsegment_settle_tasks[key] = task
+
+    async def _settle_subsegment(
+        self, match_id: str, seat: Seat, level_index: int, seq: int
+    ) -> None:
+        """静默期已过且无再穿越：结算该平面并广播实时时间差。
+
+        有效时刻 = 最后一次穿越（擦边往返的早触发被真实穿越顶掉）。相对
+        游标三种情形：高于 → 广播并推进游标、结束折返会话；等于 → 同键
+        重播修正（amend）、结束会话；低于且在折返会话中 → 按当前时刻广播
+        但游标不回退，低于且不在会话中 → 迟到的乱序低键丢弃（事件保留
+        在档作后续重访基线）。回合已离开 IN_ROUND → 迟到结算丢弃。
+        """
+        await asyncio.sleep(SUBSEGMENT_SETTLE_QUIET_S)
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        key = (seat, level_index, seq)
+        if store.subsegment_settle_tasks.get(key) is not asyncio.current_task():
+            return  # 已被更新的事件重新调度（或整场重置），本轮作废
+        store.subsegment_settle_tasks.pop(key, None)
+        if store.phase != MatchPhase.IN_ROUND:
+            return
+        events = store.subsegment_hits.get(key)
+        if not events:
+            return
+        k = (level_index, seq)
+        frontier = store.subsegment_frontier.get(seat)
+        if (
+            frontier is not None
+            and k < frontier
+            and seat not in store.subsegment_revisiting
+        ):
+            return  # 更高键已结算且非折返重访：低键不回退画面
+        owner = Seat.PLAYER_B if seat == Seat.PLAYER_A else Seat.PLAYER_A
+        sample = store.subsegments.get((owner, level_index, seq))
+        if sample is None:
+            return
+        round_id = store.current_round_id
+        if round_id is None:
+            return
+        hit_ms = events[-1]
+        if frontier is None or k > frontier:
+            store.subsegment_frontier[seat] = k
+        # 追平/越过最远进度：折返会话结束（低键重访广播时游标与会话保持）
+        if frontier is None or k >= frontier:
+            store.subsegment_revisiting.discard(seat)
+        await self.cm.broadcast_match(
+            match_id,
+            SrvSubsegmentGap(
+                round_id=round_id,
+                level_index=level_index,
+                seq=seq,
+                seat=owner.name,
+                sample_ms=sample.t_ms,
+                hit_seat=seat.name,
+                hit_ms=hit_ms,
+                gap_ms=hit_ms - sample.t_ms,
+            ),
+        )
+
+    async def on_live_time(
+        self,
+        match_id: str,
+        seat: Seat,
+        round_id: str,
+        level_index: int,
+        total_ms: int,
+        segment_ms: int,
+        real_time_ms: int | None = None,
+    ) -> None:
+        """选手实时计时上报（每秒）：按席暂存最近一条并中转裁判/导播。
+
+        选手间互不转发（对手实时进度不下发选手端，避免干扰）；裁判/导播
+        晚连时由握手补发暂存值（见 connection_manager.connect）。
+        """
+        store = self.cm.registry.get(match_id)
+        if store is None:
+            return
+        record = await self._require_active_round(store, round_id)
+        if record is None:
+            return
+        live = SrvLiveTime(
+            seat=seat.name,
+            round_id=round_id,
+            level_index=level_index,
+            total_ms=total_ms,
+            segment_ms=segment_ms,
+            real_time_ms=real_time_ms,
+        )
+        store.live_times[seat] = live  # 每席只留最近一条（握手补发用）
+        await self.cm.send_to_seat(match_id, Seat.REFEREE, live)
+        await self.cm.send_to_seat(match_id, Seat.DIRECTOR, live)
 
     async def _broadcast_status(
         self, match_id: str, seat: Seat, state: PlayerRoundState
@@ -729,6 +1395,28 @@ class MatchEngine:
                 attempts=opp.attempts,
             ),
         )
+        # 分段采样回放：仅对方的采样（供其重建检测平面），按插入序逐条补发；
+        # 客户端按 (level_index, seq) 去重，重复补放无副作用
+        for (owner_seat, _level_index, _seq), s in store.subsegments.items():
+            if owner_seat == seat:
+                continue
+            await self.cm.send_to_seat(
+                match_id,
+                seat,
+                SrvSubsegmentSample(
+                    seat=owner_seat.name,
+                    round_id=round_id,
+                    level_index=s.level_index,
+                    seq=s.seq,
+                    t_ms=s.t_ms,
+                    px=s.px,
+                    py=s.py,
+                    pz=s.pz,
+                    dx=s.dx,
+                    dy=s.dy,
+                    dz=s.dz,
+                ),
+            )
 
     async def terminate_round(self, match_id: str, round_id: str, reason: str) -> None:
         """裁判强制终止当前回合（选手崩溃/断连不可判断，§10.1）。
@@ -761,9 +1449,9 @@ class MatchEngine:
         """裁判手动结束比赛（backend-manual-match-end）。
 
         胜方自动按比分判定（达到取胜分数的一方）；未决出胜方时拒绝。
-        常规流程下达到取胜分数时 ``_apply_verdict`` 已自动结束，本入口
-        主要兜底改判把比分改回阈值以下再改回达阈、或暂停/异常卡住的场。
-        结束后广播 match_end/MATCH_END、踢出选手、通知赛程引擎。
+        达阈值后比赛停在 ROUND_END 等待本入口或管理端手动结束；若双方选手与
+        导播全部断开，也会由 disconnect 流程自动结束。结束后广播
+        match_end/MATCH_END、踢出选手、通知赛程引擎。
         """
         store = self.cm.registry.get(match_id)
         if store is None:
@@ -797,6 +1485,27 @@ class MatchEngine:
         if store.wins_b >= threshold:
             return "B"
         return None
+
+    async def auto_end_if_all_disconnected(self, store: MatchStore) -> bool:
+        """胜负已定且双方选手/导播全部断开后自动收尾。
+
+        正常流程不再在达阈值时立即结束：先停在 ROUND_END 等裁判/管理员手动
+        结束；若所有选手和导播都离开，说明已无人可继续或观看，直接自动结束
+        以免比赛卡在“胜方已定但未收尾”状态。裁判是否在线不影响本判定。
+        """
+        if store.match.status != MatchStatus.RUNNING:
+            return False
+        winner = self._decided_winner(store)
+        if winner is None:
+            return False
+        if (
+            Seat.PLAYER_A in store.connections
+            or Seat.PLAYER_B in store.connections
+            or store.directors
+        ):
+            return False
+        await self._end_match(store, winner)
+        return True
 
     async def force_end_full(self, match_id: str) -> bool:
         """管理端强制结束的完整流程：按比分推导胜方后走 ``_end_match``。
@@ -907,12 +1616,33 @@ class MatchEngine:
                 threshold=store.match.win_threshold,
             ),
         )
-        # 比分达到取胜分数 → 立即自动结束（广播 match_end/系统消息、踢选手、
-        # 推进赛程）；未达阈值才进入 ROUND_END 等待下一回合。
+        # 比分同步一条全场系统消息（Twilight 前缀，各端逐字一致；标识用
+        # 登录用户名而非展示名）
+        await self.cm.system_message(
+            store.id,
+            self.cm.tr(
+                store.id,
+                "score.update",
+                player_a=self._username_of(store.match.player_a_id),
+                a=store.wins_a,
+                b=store.wins_b,
+                player_b=self._username_of(store.match.player_b_id),
+            ),
+            kind="score",
+        )
+        # 比分达到取胜分数后不再自动结束：进入 ROUND_END，等待裁判/管理员手动
+        # 结束；若双方选手与导播全部断开连接，则由 disconnect 流程自动收尾。
         winner = self._decided_winner(store)
         if winner is not None:
-            await self._end_match(store, winner)
-            return
+            await self.cm.system_message(
+                store.id,
+                self.cm.tr(
+                    store.id,
+                    "match.winner_decided",
+                    winner=winner,
+                ),
+                kind="winner_decided",
+            )
         store.phase = MatchPhase.ROUND_END
         store.reset_ready()
         await self.cm.broadcast_match(
@@ -964,6 +1694,8 @@ class MatchEngine:
     async def _rematch(self, store: MatchStore, old_record: RoundRecord) -> None:
         store.round_counter += 1
         pick = old_record.pick_snapshot
+        # 旧快照可能早于「WS pick 签 logo_url」（恒 None），重签一次供重发
+        pick = pick.model_copy(update={"logo_url": self._pick_logo_url(pick)})
         new_record = RoundRecord(
             match_id=store.id,
             round_no=store.round_counter,
@@ -982,6 +1714,13 @@ class MatchEngine:
         # 重赛沿用原回合词条集合与重试次数（backend-ct-pick-tags §2.3），裁判无需重选
         store.pending_pick_tags = list(pick.tags)
         store.pending_pick_retry = pick.retry_count
+        # 不重发 pick_announced（选手端沿用上一回合预载）；仅留存快照供
+        # PREP 断线重连握手重放。pick_snapshot 已是下发形态，直接复用。
+        store.pick_announced = SrvPickAnnounced(
+            pick_code=pick.code,
+            pick=pick,
+            collection=self._expand_collection(pick.collection),
+        )
         store.phase = MatchPhase.PREP
         store.reset_ready()
         await self.cm.broadcast_match(
@@ -1036,6 +1775,20 @@ class MatchEngine:
                 threshold=store.match.win_threshold if store else 1,
             ),
         )
+        # 改判后比分变化 → 同步全场系统消息（与 _apply_verdict 一致）
+        if store is not None:
+            await self.cm.system_message(
+                match_id,
+                self.cm.tr(
+                    match_id,
+                    "score.update",
+                    player_a=self._username_of(store.match.player_a_id),
+                    a=wins_a,
+                    b=wins_b,
+                    player_b=self._username_of(store.match.player_b_id),
+                ),
+                kind="score",
+            )
 
     async def _recompute_score(self, match_id: str) -> None:
         store = self.cm.registry.get(match_id)

@@ -28,6 +28,21 @@ def _new_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# CT 词条默认值（词条管理库的前置种子；见 rest/ct_tag_controller.py）
+# ---------------------------------------------------------------------------
+
+DEFAULT_CT_TAGS: tuple[str, ...] = (
+    "Glitchless",
+    "Pinch",
+    "Checkpoint",
+    "Jumpless",
+    "No Checkpoint",
+    "No EC",
+)
+CT_TAG_ACHIEVEMENT = "Achievement"
+
+
+# ---------------------------------------------------------------------------
 # 枚举
 # ---------------------------------------------------------------------------
 
@@ -263,6 +278,9 @@ class Account(Document):
     password_hash: str  # 口令哈希
     roles: list[AccountType] = Field(default_factory=list)  # 角色集合
     display_name: str  # 展示名
+    # speedrun.com 账号绑定（用户名或 8 位用户 id；导播 categoryinfo 场景用于
+    # 在榜单中高亮本场选手，运行时经 /users?lookup= 解析）。未绑定为 None。
+    speedrun_id: str | None = None
     created_at: datetime = Field(default_factory=now_ts)
 
     @model_validator(mode="before")
@@ -336,6 +354,23 @@ class Pick(BaseModel):
     # 见 backend-round-start-single-scoring §2.2）。图池选图恒为 None
     # ——计分方式属于赛制（Match.scoring_method），不属于图池。
     single_scoring: str | None = None
+    # speedrun.com 排行榜映射（导播 categoryinfo 场景拉榜用；图池编辑器配置）。
+    # 游戏固定为 Human: Fall Flat（k6qgnmdg），不存字段。category 为空 = 未映射。
+    speedrun_category_id: str | None = None  # 分类 id（全游戏或单关 IL 通用）
+    speedrun_level_id: str | None = None  # 单关 IL 分类的关卡 id；全游戏为 None
+    # 子分类过滤 {varId: valueId}
+    speedrun_variables: dict[str, str] = Field(default_factory=dict)
+
+
+class CtTag(Document):
+    """自定义词条（CT 类别可选附加规则标签）。
+
+    管理端「词条管理」维护全局词条库；图池 CT 类别通过 ``Category.ct_tags``
+    选择本图池支持的词条。``name`` 唯一且不可改（与 Level.name 同策略）。
+    """
+
+    name: str  # 词条原文，如 "Glitchless" / "Achievement"
+    created_at: datetime = Field(default_factory=now_ts)
 
 
 class Category(BaseModel):
@@ -345,6 +380,9 @@ class Category(BaseModel):
 
     name: str  # 类别名，如 ML / IL / CP
     picks: list[Pick] = Field(default_factory=list)
+    # CT 类别支持的词条（管理端词条库中的 name 列表；None = 旧数据未配置，
+    # 回退内置词条。空列表 = 本图池 CT 不支持任何词条）。仅 CT 类别有意义。
+    ct_tags: list[str] | None = None
 
 
 class Mappool(BaseModel):
@@ -364,6 +402,16 @@ class Mappool(BaseModel):
 
     def all_picks(self) -> list[Pick]:
         return [pick for c in self.categories for pick in c.picks]
+
+
+class StreamLinks(BaseModel):
+    version: int = Field(default=0, ge=0, le=2**53 - 1)
+    hlsA: str = ""
+    hlsB: str = ""
+    embedA: str = ""
+    embedB: str = ""
+    updated_at_ms: int | None = None
+    updated_by: str | None = None
 
 
 class Match(Document):
@@ -388,9 +436,14 @@ class Match(Document):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     paused_at: datetime | None = None  # 最近一次暂停时刻（审计/展示用）
-    # 赛事归属（可选；非赛事对决为 None）。赛程引擎据此关联回 Fixture。
+    # 归档时刻（NULL=未归档）。纯管理端列表整理标记，与状态机正交：
+    # 不影响 MatchStatus / match_log / fixture 推进 / 选手占用等任何逻辑。
+    archived_at: datetime | None = None
+    # 赛事归属（孤立比赛统一挂默认赛事 DEFAULT_TOURNAMENT_ID）。赛程引擎据此
+    # 关联回 Fixture；存量 None 由启动 seed（ensure_default_tournament）回填。
     tournament_id: str | None = None
     fixture_id: str | None = None
+    stream_links: StreamLinks = Field(default_factory=StreamLinks)
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +519,7 @@ class ChatMessage(Document):
     match_id: str
     sender_role: ChatSenderRole
     sender_id: str | None  # 系统消息为 None
-    sender_name: str  # 展示名（系统消息为 "系统"）
+    sender_name: str  # 展示名（系统消息为 "Twilight"，见 protocol.SrvSystem.sender）
     text: str
     is_system: bool = False
     ts: datetime = Field(default_factory=now_ts)
@@ -522,6 +575,11 @@ class TournamentStanding(BaseModel):
     eliminated_round: int | None = None  # 淘汰赛第几轮出局（None=冠军）
     buchholz: float | None = None  # 瑞士轮破平：对手积分和
     note: str | None = None  # 备注，如「冠军」「亚军」
+
+
+# 默认赛事（孤立比赛容器）的固定主键：所有不经赛程直接创建的比赛都挂它名下。
+# 不允许删除/修改/生成赛程，也永不结束（孤立比赛无 fixture，结束钩子不推进）。
+DEFAULT_TOURNAMENT_ID = "default"
 
 
 class Tournament(Document):
@@ -594,3 +652,28 @@ class Fixture(Document):
     created_at: datetime = Field(default_factory=now_ts)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# speedrun.com 代理持久化缓存
+# ---------------------------------------------------------------------------
+
+# Mongo TTL 保留时长（fetched_at 起算，防集合膨胀；前端 SWR 的 stale 层）
+SPEEDRUN_CACHE_RETENTION_S = 7 * 24 * 3600
+
+# 缓存来源端点（与 speedrun_proxy 各端点一一对应）
+SpeedrunCacheKind = Literal["game_meta", "variables", "leaderboard", "user", "pb"]
+
+
+class SpeedrunCacheDoc(Document):
+    """speedrun.com 代理响应的持久化缓存（每个速通项目一文档）。
+
+    主键用 ``sha256(key)[:32]`` 确定性生成（见 speedrun_proxy._doc_id），
+    同一上游 URL 恒定落同一文档，写入即幂等 upsert。key 即上游完整 URL，
+    天然按分类/关卡/子分类变量/top/游戏区分存储。
+    """
+
+    key: str  # 上游完整 URL（httpx 规范化）；params 顺序即 key 的一部分
+    kind: SpeedrunCacheKind
+    data: Any  # 上游原文 JSON（纯 JSON 类型，BSON 原样往返）
+    fetched_at: datetime = Field(default_factory=now_ts)

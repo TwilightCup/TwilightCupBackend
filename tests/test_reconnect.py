@@ -4,8 +4,11 @@ from __future__ import annotations
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -41,6 +44,7 @@ def test_idempotent_level_upload(world) -> None:  # type: ignore[no-untyped-def]
             ws_a.send_json(
                 {
                     "type": "level_time_upload",
+                    "utc_ms": 1700000000002,
                     "round_id": rid,
                     "level_index": 0,
                     "this_level_ms": 1000,
@@ -67,6 +71,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         ws_a.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 1500,
@@ -76,6 +81,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         ws_b.send_json(
             {
                 "type": "level_time_upload",
+                "utc_ms": 1700000000002,
                 "round_id": rid,
                 "level_index": 0,
                 "this_level_ms": 2000,
@@ -89,7 +95,7 @@ def test_reconnect_snapshot(world) -> None:  # type: ignore[no-untyped-def]
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a2,
     ):
         _drain(ws_r2, 5)
-        _drain(ws_a2, 5)
+        _drain(ws_a2, 6)
         ws_a2.send_json({"type": "reconnect_resync", "round_id": rid})
         msgs = [ws_a2.receive_json() for _ in range(2)]
         assert all(m["type"] == "player_status" for m in msgs)

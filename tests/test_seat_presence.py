@@ -10,8 +10,11 @@ from __future__ import annotations
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -28,21 +31,26 @@ def test_player_connect_broadcasts_online(world) -> None:  # type: ignore[no-unt
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)  # auth_ok / ready_state / phase_change / seat_state ×2
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-            _drain(ws_a, 5)
+            _drain(ws_a, 6)
             m = _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
             )
             assert m["online"] is True
+            notice = _recv_until(
+                ws_r,
+                lambda m: m["type"] == "system" and m["kind"] == "seat",
+            )
+            assert "connected" in notice["text"]
 
 
 def test_player_disconnect_broadcasts_offline(world) -> None:  # type: ignore[no-untyped-def]
-    """验收 1/3：选手断开 → 裁判端收到 online=false。"""
+    """验收 1/3：选手断开 → 裁判端收到 online=false + 显式 system 提示。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-            _drain(ws_a, 5)
+            _drain(ws_a, 6)
             _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
@@ -53,13 +61,18 @@ def test_player_disconnect_broadcasts_offline(world) -> None:  # type: ignore[no
             lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
         )
         assert m["online"] is False
+        notice = _recv_until(
+            ws_r,
+            lambda m: m["type"] == "system" and m["kind"] == "seat",
+        )
+        assert "disconnected" in notice["text"]
 
 
 def test_init_sequence_resends_full_presence(world) -> None:  # type: ignore[no-untyped-def]
     """验收 4：新连接初始化序列补发双方在线全量状态。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         # 裁判此时连入：A 在线 / B 离线，补发给裁判
         with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
             states = {
@@ -76,7 +89,7 @@ def test_referee_reconnect_gets_current_presence(world) -> None:  # type: ignore
     """验收 4（裁判端刷新重连）：A 先连后断，裁判再连 → 补发 A=offline。"""
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a:
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
     # A 已断开。裁判此刻连入，补发的全量状态应反映 A 离线
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         m = _recv_until(
@@ -93,14 +106,14 @@ def test_reconnect_no_flicker(world) -> None:  # type: ignore[no-untyped-def]
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
         _drain(ws_r, 5)
         with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a1:
-            _drain(ws_a1, 5)
+            _drain(ws_a1, 6)
             _recv_until(
                 ws_r,
                 lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
             )
             # 顶号重连：旧连接被替换，新连接落定后才广播（net online）
             with client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a2:
-                _drain(ws_a2, 5)
+                _drain(ws_a2, 6)
                 m = _recv_until(
                     ws_r,
                     lambda m: m["type"] == "seat_state" and m["seat"] == "PLAYER_A",
@@ -109,7 +122,7 @@ def test_reconnect_no_flicker(world) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-untyped-def]
-    """§2 第 3 点：kick_players（达阈值自动结束后踢选手）同样广播 offline。"""
+    """§2 第 3 点：kick_players（达阈值后裁判手动结束并踢选手）广播 offline。"""
     client, _, _, tokens = world
     with (
         client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
@@ -119,7 +132,7 @@ def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-un
         for ws in (ws_r, ws_a, ws_b):
             _drain(ws, 5)
         # 走完整回合到比赛结束（win_threshold=2，需两回合）：
-        # 第二回合判完即达阈值 → 自动结束（match_end + 踢选手）。
+        # 第二回合判完达阈值后不自动结束，由裁判手动结束并踢选手。
         for round_no in range(2):
             ws_r.send_json({"type": "referee_mark_prep"})
             _drain(ws_r, 2)
@@ -133,20 +146,20 @@ def test_match_end_kick_broadcasts_offline(world) -> None:  # type: ignore[no-un
                         "type": "project_complete",
                         "round_id": rid,
                         "final_total_ms": 1000 + round_no,
+                        "utc_ms": 1700000000001,
                     }
                 )
             _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 4)
             ws_r.send_json(
                 {"type": "referee_verdict", "round_id": rid, "verdict": 1}  # A_WIN
             )
-            if round_no == 0:
-                _recv_until(
-                    ws_r,
-                    lambda m: m["type"] == "phase_change" and m["phase"] == 5,
-                )
-            else:
-                # 第二回合判完即达阈值 → 自动 match_end
-                _recv_until(ws_r, lambda m: m["type"] == "match_end")
+            _recv_until(
+                ws_r,
+                lambda m: m["type"] == "phase_change" and m["phase"] == 5,
+            )
+        # 第二轮后已到阈值；手动结束触发 kick_players
+        ws_r.send_json({"type": "referee_end_match"})
+        _recv_until(ws_r, lambda m: m["type"] == "match_end")
         # kick_players → 双方 offline
         for seat in ("PLAYER_A", "PLAYER_B"):
             m = _recv_until(

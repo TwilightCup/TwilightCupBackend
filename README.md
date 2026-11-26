@@ -20,8 +20,7 @@ uv sync --extra dev
 # 配置环境变量
 cp .env.example .env  # 编辑 .env
 
-# 起一个本地 MongoDB（或用 docker compose）
-docker compose -f docker-compose-example.yml up -d mongo
+# 启动前请准备本地 MongoDB，并在 .env 中填写连接信息
 
 # 启动服务
 uv run uvicorn twilightcupbackend.main:app --reload
@@ -31,6 +30,8 @@ uv run ruff check src tests
 uv run pyright
 uv run pytest
 ```
+
+容器部署与双地址端口映射见[部署速记](deploy/部署速记.md)。
 
 ## 项目结构
 
@@ -55,8 +56,9 @@ asyncio 事件循环内变更）。详见各模块 docstring。
 uv run python scripts/export_openapi.py   # → docs/openapi.json
 ```
 
-覆盖：账号管理、比赛会话管理、日志查询（详见 `/docs` 的标签分组）。所有非健康检查
-接口均需 Bearer JWT（`POST /auth/login` 获取）。
+[静态 OpenAPI 文档](docs/openapi.json) 包含赛事与比赛、账号、关卡、图池与自定义词条、日志、上传和直播相关接口。
+`GET /health` 可直接查询版本。调用受保护接口前，通过 `POST /auth/login` 获取 JWT，
+通常放在 `Authorization: Bearer <JWT>` 请求头中。Bilibili 和 YouTube 播放代理通过 `token` 查询参数接收 JWT。
 
 **账号多角色**：`Account.roles` 为角色集合（一个账号可同时拥有选手/裁判/导播/管理员的
 任意组合）；创建时选「管理员」会自动附带裁判 + 导播。权限按集合判定（如 `require_viewer`
@@ -72,5 +74,10 @@ FastAPI 不自动生成其文档，故维护一份**由代码自动生成**的�
 - 文档：[`docs/ws-protocol.md`](./docs/ws-protocol.md)
 - 重新生成（`protocol.py` 变更后）：`uv run python scripts/gen_ws_docs.py`
 
-包含：连接与鉴权流程、枚举取值、全部 17 条客户端消息与 19 条服务端消息的字段表。
+协议参考列出握手参数、枚举和双向消息字段。客户端联调还可参阅以下专题：
+
+- [比赛直播链接](docs/stream-links.md) 说明裁判与导播的读写权限、并发保存和快照通知。
+- [导播帧对齐](docs/frame-align-authority.md) 说明控制台接管和舞台如何跟随播放时间。
+- [时间轴重置](docs/frame-align-reset.md) 说明手动调整播放时间的请求、确认与恢复流程。
+- [系统消息语言](docs/locales.md) 说明裁判如何切换比赛语言。
 

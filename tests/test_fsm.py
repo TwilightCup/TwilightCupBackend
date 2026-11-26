@@ -7,8 +7,11 @@ from __future__ import annotations
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 20):  # type: ignore[no-untyped-def]
@@ -33,6 +36,21 @@ def test_prep_and_select_pick(world) -> None:  # type: ignore[no-untyped-def]
         assert "selected" in pick_msg["text"]
 
 
+def test_select_pick_preset_retry_in_broadcast(world) -> None:  # type: ignore[no-untyped-def]
+    """非 CT/EX 单关走图池预设重试：选图广播同样带重试后缀（CP01 → x3），
+    与 pick_announced / round_start 下发的生效重试口径一致。"""
+    client, _, _, tokens = world
+    with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
+        _drain(ws_r, 5)
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _recv_until(ws_r, lambda m: m["type"] == "phase_change" and m["phase"] == 1)
+        ws_r.send_json({"type": "referee_select_pick", "pick_code": "CP01"})
+        pick_msg = _recv_until(
+            ws_r, lambda m: m["type"] == "system" and "CP01" in m["text"]
+        )
+        assert "x3" in pick_msg["text"]
+
+
 def test_select_pick_invalid(world) -> None:  # type: ignore[no-untyped-def]
     client, _, _, tokens = world
     with client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r:
@@ -49,7 +67,7 @@ def test_manual_start_reaches_round(world) -> None:  # type: ignore[no-untyped-d
         client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
     ):
         _drain(ws_r, 5)
-        _drain(ws_a, 5)
+        _drain(ws_a, 6)
         ws_r.send_json({"type": "referee_mark_prep"})
         _drain(ws_r, 2)  # phase_change + system
         ws_r.send_json({"type": "referee_select_pick", "pick_code": "ML1"})
@@ -59,6 +77,40 @@ def test_manual_start_reaches_round(world) -> None:  # type: ignore[no-untyped-d
         rs = _recv_until(ws_a, lambda m: m["type"] == "round_start", max_msgs=20)
         assert rs["pick"]["code"] == "ML1"
         assert rs["round_id"]
+
+
+def test_round_start_silently_stops_referee_timer(world) -> None:  # type: ignore[no-untyped-def]
+    """场景：回合开始时，正在跑的 !timer 独立计时器被静默停止，不发停止消息。"""
+    client, _, session, tokens = world
+    with (
+        client.websocket_connect(f"/ws/{tokens['ref']}") as ws_r,
+        client.websocket_connect(f"/ws/{tokens['pa']}") as ws_a,
+    ):
+        _drain(ws_r, 5)
+        _drain(ws_a, 6)
+        ws_r.send_json({"type": "referee_mark_prep"})
+        _recv_until(
+            ws_r, lambda m: m["type"] == "preload_state"
+        )  # 清空 mark_prep 的广播
+        ws_r.send_json({"type": "referee_select_pick", "pick_code": "ML1"})
+        _recv_until(
+            ws_r, lambda m: m["type"] == "pick_announced"
+        )  # 清空 select_pick 的广播
+
+        # 启动一个 60s 的裁判独立计时器
+        ws_r.send_json({"type": "chat", "text": "!timer 60"})
+        assert ws_r.receive_json()["type"] == "chat"  # 命令回显
+        state = ws_r.receive_json()
+        assert state["type"] == "counter_state" and state["remaining_secs"] == 60
+        assert ws_r.receive_json()["type"] == "system"  # 启动系统消息
+        store = client.app.state.registry.get(session.id)
+        assert store is not None and store.counter_timer is not None
+
+        ws_r.send_json({"type": "referee_manual_start"})
+        _recv_until(
+            ws_a, lambda m: m["type"] == "round_start", max_msgs=20
+        )
+        assert store.counter_timer is None
 
 
 def test_auto_countdown_aborted_by_unready(world) -> None:  # type: ignore[no-untyped-def]

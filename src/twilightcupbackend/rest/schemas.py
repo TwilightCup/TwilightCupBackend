@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
+
+from ..controllers import resolve_pick_logo_url
 
 if TYPE_CHECKING:
     from ..storage import Storage
@@ -14,6 +16,7 @@ from ..datatypes import (
     Account,
     AccountType,
     BracketSide,
+    CtTag,
     Fixture,
     FixtureStatus,
     Level,
@@ -28,10 +31,20 @@ from ..datatypes import (
     TournamentStatus,
 )
 
+# 登录端标识 → 需具备的账号角色（auth_controller 据此校验）
+LoginEndpoint = Literal["admin", "referee", "director", "player"]
+
 
 class LoginRequest(BaseModel):
     username: str = Field(description="登录用户名")
     password: str = Field(description="口令明文（服务端仅存哈希）")
+    endpoint: LoginEndpoint | None = Field(
+        default=None,
+        description="登录端（可选，旧客户端不传）：校验账号 roles 含对应角色"
+        "（admin→ADMIN/referee→REFEREE/director→DIRECTOR/player→PLAYER），"
+        "无该角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌；不传/null 时"
+        "不做角色校验，行为与旧版完全一致。",
+    )
 
 
 class TokenResponse(BaseModel):
@@ -53,6 +66,10 @@ class AccountCreate(BaseModel):
     roles: list[AccountType] = Field(
         description="角色集合（可多选）：1=选手 2=裁判 3=导播 4=管理员"
     )
+    speedrun_id: str | None = Field(
+        default=None,
+        description="speedrun.com 账号绑定（用户名或 8 位用户 id），可空",
+    )
 
 
 class AccountOut(BaseModel):
@@ -60,6 +77,7 @@ class AccountOut(BaseModel):
     username: str
     roles: list[AccountType]
     display_name: str
+    speedrun_id: str | None = None
     created_at: datetime
 
     @classmethod
@@ -69,6 +87,7 @@ class AccountOut(BaseModel):
             username=account.username,
             roles=account.roles,
             display_name=account.display_name,
+            speedrun_id=account.speedrun_id,
             created_at=account.created_at,
         )
 
@@ -137,6 +156,9 @@ class MatchOut(BaseModel):
     player_b_id: str
     player_a_username: str = ""
     player_b_username: str = ""
+    # 双方选手的 speedrun.com 账号绑定（导播 categoryinfo 场景高亮用；未绑定为 None）
+    player_a_speedrun: str | None = None
+    player_b_speedrun: str | None = None
     referee_id: str
     director_id: str
     winner: str | None
@@ -145,6 +167,7 @@ class MatchOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
+    archived_at: datetime | None = None  # 归档时刻（null=未归档，仅列表整理用）
 
     @classmethod
     def from_match(
@@ -152,20 +175,25 @@ class MatchOut(BaseModel):
     ) -> MatchOut:
         """构造 MatchOut。
 
-        db 可选：传入时附带解析双方 username（裁判/导播端展示用）；
+        db 可选：传入时附带解析双方 username 与 speedrun 绑定（裁判/导播端展示用），
+        并作为选图展示图按关卡回退的数据源（无 db 时仅签 pick 自有 logo）；
         storage 可选：传入时给 mappool 每个 Pick 的 logo 签 logo_url。
         """
         a_username = ""
         b_username = ""
+        a_speedrun = None
+        b_speedrun = None
         if db is not None:
             a = db.accounts.get(session.player_a_id)
             b = db.accounts.get(session.player_b_id)
             a_username = a.username if a is not None else ""
             b_username = b.username if b is not None else ""
+            a_speedrun = a.speedrun_id if a is not None else None
+            b_speedrun = b.speedrun_id if b is not None else None
         mappool = session.mappool
         if storage is not None:
             for pick in mappool.all_picks():
-                pick.logo_url = storage.presigned_url(pick.logo)
+                pick.logo_url = resolve_pick_logo_url(pick, db, storage)
         return cls(
             id=session.id,
             name=session.name,
@@ -182,6 +210,8 @@ class MatchOut(BaseModel):
             player_b_id=session.player_b_id,
             player_a_username=a_username,
             player_b_username=b_username,
+            player_a_speedrun=a_speedrun,
+            player_b_speedrun=b_speedrun,
             referee_id=session.referee_id,
             director_id=session.director_id,
             winner=session.winner,
@@ -190,6 +220,7 @@ class MatchOut(BaseModel):
             created_at=session.created_at,
             started_at=session.started_at,
             ended_at=session.ended_at,
+            archived_at=session.archived_at,
         )
 
 
@@ -211,12 +242,18 @@ class MappoolOut(BaseModel):
     created_at: datetime
 
     @classmethod
-    def from_doc(cls, doc: MappoolDoc, storage: Storage | None = None) -> MappoolOut:
-        """构造输出；若传入 storage，给每个 Pick 的 logo key 签发 presigned URL。"""
+    def from_doc(
+        cls,
+        doc: MappoolDoc,
+        storage: Storage | None = None,
+        db: Any = None,
+    ) -> MappoolOut:
+        """构造输出；若传入 storage，给每个 Pick 签 logo_url（db 传入时支持按
+        合集关卡回退 Level.logo，见 controllers.resolve_pick_logo_url）。"""
         mappool = doc.mappool
         if storage is not None:
             for pick in mappool.all_picks():
-                pick.logo_url = storage.presigned_url(pick.logo)
+                pick.logo_url = resolve_pick_logo_url(pick, db, storage)
         return cls(
             id=doc.id,
             name=doc.name,
@@ -537,3 +574,22 @@ class LevelOut(BaseModel):
             logo_url=storage.public_url(level.logo) if storage else None,
             created_at=level.created_at,
         )
+
+
+# ---------------------------------------------------------------------------
+# 词条管理
+# ---------------------------------------------------------------------------
+
+
+class CtTagCreate(BaseModel):
+    name: str = Field(description="词条原文（唯一，如 Glitchless / Achievement）")
+
+
+class CtTagOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+
+    @classmethod
+    def from_doc(cls, doc: CtTag) -> CtTagOut:
+        return cls(id=doc.id, name=doc.name, created_at=doc.created_at)

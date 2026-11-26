@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from classy_fastapi import Routable, get, patch, post
+from classy_fastapi import Routable, get, patch, post, put
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..auth import get_current_account, hash_password, verify_password
 from ..controllers import DBController, player_running_conflict
 from ..datatypes import (
+    DEFAULT_TOURNAMENT_ID,
     Account,
     AccountType,
     MatchStatus,
@@ -19,6 +20,13 @@ from ..datatypes import (
     now_ts,
 )
 from ..storage import Storage
+from ..stream_links import (
+    STREAM_LINK_RESPONSES,
+    StreamLinksOut,
+    StreamLinksPut,
+    StreamLinksService,
+    stream_links_account,
+)
 from .schemas import (
     AccountOut,
     BracketView,
@@ -44,6 +52,37 @@ class MeController(Routable):
         self.cm = cm
         self.storage = storage
 
+    @get(
+        "/matches/{match_id}/stream-links",
+        response_model=StreamLinksOut,
+        responses=STREAM_LINK_RESPONSES,
+    )
+    def stream_links(
+        self, match_id: str, account: Account = Depends(stream_links_account)
+    ) -> StreamLinksOut:
+        return StreamLinksService(self.db).read(match_id, account)
+
+    @put(
+        "/matches/{match_id}/stream-links",
+        response_model=StreamLinksOut,
+        responses=STREAM_LINK_RESPONSES,
+    )
+    async def save_stream_links(
+        self,
+        match_id: str,
+        body: StreamLinksPut,
+        account: Account = Depends(stream_links_account),
+    ) -> StreamLinksOut:
+        saved, changed = StreamLinksService(self.db).save(
+            match_id,
+            account,
+            body.model_dump(exclude={"expected_version"}),
+            body.expected_version,
+        )
+        if changed and self.cm is not None:
+            await self.cm.notify_stream_links(match_id)
+        return saved
+
     @staticmethod
     def _is_referee_or_admin(match, account: Account) -> bool:  # type: ignore[no-untyped-def]
         return match.referee_id == account.id or AccountType.ADMIN in account.roles
@@ -61,12 +100,15 @@ class MeController(Routable):
         "/matches",
         response_model=list[MatchSummary],
         summary="我参与的比赛",
-        description="返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。",
+        description="返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。"
+        "已归档（archived_at 非空）的比赛不再下发。",
     )
     def matches(
         self, account: Account = Depends(get_current_account)
     ) -> list[MatchSummary]:
         matches = self.db.matches.find_by_member(account.id)
+        # 已归档比赛为管理端列表整理收纳，成员端无需再看到
+        matches = [s for s in matches if s.archived_at is None]
         matches.sort(
             key=lambda s: (s.status == MatchStatus.ENDED, -s.created_at.timestamp())
         )
@@ -262,8 +304,19 @@ class MeController(Routable):
             TournamentOut.from_tournament(t) for t in self._my_tournaments(account.id)
         ]
 
+    def _is_default_tournament_member(self, account: Account) -> bool:
+        """默认赛事（孤立比赛容器）无成员池，按「参与过其名下任意一场比赛
+        （选手/裁判/导播任一角色）」判定成员资格。"""
+        return any(
+            m.tournament_id == DEFAULT_TOURNAMENT_ID
+            for m in self.db.matches.find_by_member(account.id)
+        )
+
     def _require_tournament_member(self, tournament_id: str, account: Account) -> None:
-        """门控：账号须是该赛事的参赛选手/裁判/导播/管理员。"""
+        """门控：账号须是该赛事的参赛选手/裁判/导播/管理员。
+
+        默认赛事成员池恒空，改按比赛参与关系判定（见 _is_default_tournament_member）。
+        """
         t = self.db.tournaments.get(tournament_id)
         if t is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "赛事不存在")
@@ -272,16 +325,46 @@ class MeController(Routable):
             or account.id in t.referee_ids
             or account.id in t.director_ids
             or AccountType.ADMIN in account.roles
+            or (
+                t.id == DEFAULT_TOURNAMENT_ID
+                and self._is_default_tournament_member(account)
+            )
         )
         if not is_member:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "非该赛事成员")
+
+    @get(
+        "/tournaments/{tournament_id}",
+        response_model=TournamentOut,
+        summary="查看赛事详情（赛事成员）",
+        description="赛事成员（选手/裁判/导播/管理员）可读赛事基本信息（名称/状态等）。"
+        "与列表端点不同，默认赛事（孤立比赛容器）不在 /me/tournaments 列表里，"
+        "但参与过其名下任意比赛的账号可经本端点读取——导播舞台 Coming Soon "
+        "场景显示赛事名/状态用。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "非该赛事成员"},
+            404: {"description": "赛事不存在"},
+        },
+    )
+    def tournament_detail(
+        self,
+        tournament_id: str,
+        account: Account = Depends(get_current_account),
+    ) -> TournamentOut:
+        self._require_tournament_member(tournament_id, account)
+        t = self.db.tournaments.get(tournament_id)
+        if t is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "赛事不存在")
+        return TournamentOut.from_tournament(t)
 
     @get(
         "/tournaments/{tournament_id}/bracket",
         response_model=BracketView,
         summary="查看赛事对阵树（赛事成员）",
         description="选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。"
-        "门控：须为该赛事参赛/裁判/导播/管理员。",
+        "门控：须为该赛事参赛/裁判/导播/管理员；默认赛事按「参与过其名下"
+        "任意比赛」判定（成员池恒空）。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "非该赛事成员"},
@@ -304,7 +387,8 @@ class MeController(Routable):
         response_model=MappoolOut,
         summary="查看赛事图池（赛事成员）",
         description="赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池"
-        "（含 logo_url）；优先取第一场已生成比赛的图池。",
+        "（含 logo_url）；优先取第一场已生成比赛的图池。默认赛事按「参与过"
+        "其名下任意比赛」判定成员，但其无 fixture，恒 404 无图池。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "非该赛事成员"},
@@ -337,7 +421,7 @@ class MeController(Routable):
             mappool=match.mappool,
             created_by="system",
         )
-        return MappoolOut.from_doc(doc, self.storage)
+        return MappoolOut.from_doc(doc, self.storage, self.db)
 
     # -------------------------------------------------------- 账号自助
 

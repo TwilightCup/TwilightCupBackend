@@ -30,6 +30,7 @@ error.no_running_match_wait = No ongoing match; please wait for the referee to s
 error.not_in_match = This account is not part of the match
 error.match_missing = Match not found
 error.match_ended = This match has already ended
+error.match_readonly = This match has ended; read-only
 error.seat_not_assigned = Account is not assigned to a seat in this match
 error.seat_mismatch = Account is not assigned as {seat} of this match
 error.match_paused = Match is paused; action unavailable
@@ -39,6 +40,10 @@ error.wrong_seat = Only {seat} can do this
 error.players_only = Only players can do this
 error.unimplemented = Unimplemented message type: {type}
 
+# --- Seat connection state (explicit notice on top of seat_state broadcasts) ---
+seat.online = {name} ({seat}) connected
+seat.offline = {name} ({seat}) disconnected
+
 # --- Pause / resume ---
 pause.message = Match paused
 resume.message = Match resumed
@@ -47,13 +52,16 @@ resume.message = Match resumed
 prep.phase_error = Cannot enter prep in phase {phase}
 prep.score_decided = Score already reached win threshold; end the match
 prep.started = Prep phase started; players type !ready when ready
+prep.hint = Prep phase in progress — type !ready when ready
 start.only_prep = Can only manual-start during prep
 start.no_pick = Select a pick before starting
 countdown.intro_auto = Both players ready; match auto-starts in {delay}s...
 countdown.intro_manual = Referee started; match begins in {delay}s...
 countdown.cancelled = Auto-start countdown cancelled
 pick.not_in_mappool = Pick not in mappool: {code}
+pick.phase_error = Cannot select a pick in phase {phase}
 pick.selected = Referee selected: {code} - {name}{tags}{retry}
+pick.current_hint = Current pick: {code} - {name}{tags}{retry}
 pick.tags_category = Pick of category {category} cannot carry tags: {code}
 pick.tags_too_many = Too many tags (max {limit}): {tags}
 pick.tags_invalid = Invalid tag: {tags}
@@ -61,10 +69,16 @@ pick.tags_conflict = Conflicting tags: Checkpoint + No Checkpoint
 pick.retry_required = Retry count required for single pick {code}: {category}
 pick.retry_min = Retry count must be >= 1: {value}
 pick.retry_not_allowed = Pick {code} of category {category} uses mappool retry_count; cannot override
+
+# --- Preload gating (pick announcement) ---
+preload.failed = {seat} preload failed{detail}; the round will fall back to standard loading
+preload.timeout_force = Preload wait timed out; forcing the round to start
+preload.manual_skip = Referee skipped the preload wait; forcing the round to start
 round.invalid_pick = Invalid pick; round cannot start
 round.started = Round started! Current pick: {code} - {name}
 forfeit.done = {player} forfeited ({reason})
 judging.await = Both players finished; awaiting referee verdict
+score.update = {player_a} {a} : {b} {player_b}
 round.not_found = Round not found
 round.not_current = Not the current round; cannot terminate
 round.terminated = Referee terminated the round: {reason}
@@ -73,5 +87,6 @@ verdict.not_verdicted = Round not yet verdicted
 match.already_ended = Match already ended
 match.no_winner = Winner not decided; cannot end match
 match.ended = Match ended, winner {winner}
+match.winner_decided = Winner decided ({winner}); waiting for referee/admin to end manually, or auto-end when all players and director disconnect
 match.admin_ended = Admin ended the match
 rematch.announce = Round tied; entering rematch -- !ready again

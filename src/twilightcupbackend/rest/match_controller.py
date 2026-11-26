@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, status
 from ..auth import require_admin
 from ..controllers import DBController, player_running_conflict
 from ..datatypes import (
+    DEFAULT_TOURNAMENT_ID,
     Account,
     AccountType,
     Mappool,
@@ -45,7 +46,8 @@ class MatchController(Routable):
         summary="创建比赛",
         description="管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、"
         "指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，"
-        "服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。",
+        "服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。"
+        "直接创建的比赛统一挂默认赛事（孤立比赛容器）。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "需要管理员权限"},
@@ -70,6 +72,9 @@ class MatchController(Routable):
 
         mappool = self._resolve_mappool(body)
 
+        # 直接创建的比赛（不经赛程）统一挂默认赛事；兜底确保其存在
+        # （正常由启动 seed 创建，此处防 seed 失败/测试未走 lifespan）。
+        self.db.ensure_default_tournament()
         match = Match(
             name=body.name,
             bo_format=body.bo_format,
@@ -84,6 +89,7 @@ class MatchController(Routable):
             player_b_id=player_b.id,
             referee_id=referee.id,
             director_id=director.id,
+            tournament_id=DEFAULT_TOURNAMENT_ID,
         )
         # 指定选手不得已在另一场 RUNNING 会话中（§6）
         conflict = player_running_conflict(
@@ -92,13 +98,14 @@ class MatchController(Routable):
         if conflict:
             raise HTTPException(status.HTTP_409_CONFLICT, conflict)
         self.db.matches.insert(match)
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @get(
         "",
         response_model=list[MatchOut],
         summary="比赛列表",
-        description="返回全部比赛。",
+        description="返回全部比赛（含已归档，archived_at 非空表示已归档）；"
+        "筛选/分页由前端客户端完成。",
         responses={
             401: {"description": "未携带有效令牌"},
             403: {"description": "需要管理员权限"},
@@ -109,7 +116,8 @@ class MatchController(Routable):
         _: Account = Depends(require_admin),
     ) -> list[MatchOut]:
         return [
-            MatchOut.from_match(s, None, self.storage) for s in self.db.matches.find()
+            MatchOut.from_match(s, self.db, self.storage)
+            for s in self.db.matches.find()
         ]
 
     @get(
@@ -130,7 +138,7 @@ class MatchController(Routable):
         match = self.db.matches.get(match_id)
         if match is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
-        return MatchOut.from_match(match, None, self.storage)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @patch(
         "/{match_id}",
@@ -148,7 +156,7 @@ class MatchController(Routable):
             409: {"description": "状态切换非法 / 选手在另一场进行中的比赛"},
         },
     )
-    def update(
+    async def update(
         self,
         match_id: str,
         body: MatchUpdate,
@@ -157,6 +165,7 @@ class MatchController(Routable):
         match = self.db.matches.get(match_id)
         if match is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        previous_players = (match.player_a_id, match.player_b_id)
         if body.name is not None:
             match.name = body.name
         if body.player_a is not None:
@@ -177,7 +186,12 @@ class MatchController(Routable):
             if conflict:
                 raise HTTPException(status.HTTP_409_CONFLICT, conflict)
         self.db.matches.replace(match)
-        return MatchOut.from_match(match, None, self.storage)
+        if self.cm is not None and previous_players != (
+            match.player_a_id,
+            match.player_b_id,
+        ):
+            await self.cm.notify_stream_links(match_id)
+        return MatchOut.from_match(match, self.db, self.storage)
 
     @staticmethod
     def _transition(match: Match, target: MatchStatus) -> None:
@@ -265,8 +279,10 @@ class MatchController(Routable):
         engine = cm.match_engine if cm is not None else None
         # 有实时会话且能从比分推导胜方 → 与裁判手动结束同一完整流程
         # （_end_match 内部会置 ENDED、写 winner/final_result、踢选手、推进赛程）
-        if cm is not None and engine is not None and await engine.force_end_full(
-            match_id
+        if (
+            cm is not None
+            and engine is not None
+            and await engine.force_end_full(match_id)
         ):
             return {"ok": True}
         match.status = MatchStatus.ENDED
@@ -284,3 +300,61 @@ class MatchController(Routable):
             )
             await cm.kick_players(match_id)
         return {"ok": True}
+
+    @post(
+        "/{match_id}/archive",
+        response_model=MatchOut,
+        summary="归档已结束比赛",
+        description="把已结束（ENDED）的比赛归档（写 archived_at）。归档是纯列表"
+        "整理功能，与状态机正交：不影响 MatchStatus、日志、赛程推进与选手占用。"
+        "归档后比赛仍出现在 /admin/matches 列表（带 archived_at，供前端筛选与"
+        "取消归档），但 /me/matches 不再下发。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "需要管理员权限"},
+            404: {"description": "比赛不存在"},
+            400: {"description": "比赛未结束 / 已归档"},
+        },
+    )
+    def archive(
+        self,
+        match_id: str,
+        _: Account = Depends(require_admin),
+    ) -> MatchOut:
+        match = self.db.matches.get(match_id)
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        if match.status != MatchStatus.ENDED:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已结束的比赛可归档")
+        if match.archived_at is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛已归档")
+        match.archived_at = now_ts()
+        self.db.matches.replace(match)
+        return MatchOut.from_match(match, self.db, self.storage)
+
+    @post(
+        "/{match_id}/unarchive",
+        response_model=MatchOut,
+        summary="取消归档",
+        description="把已归档的比赛恢复为未归档（archived_at 置空），"
+        "/me/matches 重新对其成员下发。",
+        responses={
+            401: {"description": "未携带有效令牌"},
+            403: {"description": "需要管理员权限"},
+            404: {"description": "比赛不存在"},
+            400: {"description": "比赛未归档"},
+        },
+    )
+    def unarchive(
+        self,
+        match_id: str,
+        _: Account = Depends(require_admin),
+    ) -> MatchOut:
+        match = self.db.matches.get(match_id)
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "比赛不存在")
+        if match.archived_at is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛未归档")
+        match.archived_at = None
+        self.db.matches.replace(match)
+        return MatchOut.from_match(match, self.db, self.storage)

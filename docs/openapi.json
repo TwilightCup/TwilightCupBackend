@@ -3,7 +3,7 @@
   "info": {
     "title": "TwilightCup Backend",
     "description": "黄昏杯（Twilight Cup）《人类一败涂地》1v1 速通比赛中转服务端。REST 接口用于账号/比赛管理与日志查询；选手·裁判·导播三端的实时通信走 WebSocket（协议见 docs/ws-protocol.md）。",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "paths": {
     "/health": {
@@ -37,7 +37,7 @@
           "auth"
         ],
         "summary": "登录签发令牌",
-        "description": "用用户名+口令换取 JWT 令牌，REST 与 WebSocket 均以该令牌鉴权。",
+        "description": "用用户名+口令换取 JWT 令牌，REST 与 WebSocket 均以该令牌鉴权。可选 endpoint 指定登录端（admin/referee/director/player）：账号无对应角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌（防蹭登录，已持有令牌不受影响）；不传时行为与旧版完全一致。失败错误体带稳定 code 字段：INVALID_CREDENTIALS（账密错误）/ ENDPOINT_FORBIDDEN（无该端权限）。",
         "operationId": "login_auth_login_post",
         "requestBody": {
           "content": {
@@ -61,7 +61,10 @@
             }
           },
           "401": {
-            "description": "用户名或密码错误"
+            "description": "用户名或密码错误（INVALID_CREDENTIALS）"
+          },
+          "403": {
+            "description": "无该端权限（ENDPOINT_FORBIDDEN）"
           },
           "422": {
             "description": "Validation Error",
@@ -238,7 +241,7 @@
           "accounts"
         ],
         "summary": "删除账号",
-        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "description": "按序校验（命中即拒）：不能删当前登录账号；不能删 ADMIN 角色账号（管理员只能改角色/改密码）；账号仍被引用则 409（未归档比赛 / 赛事成员池 / 对阵节点，msg 列出冲突类型，先处理引用再删）。",
         "operationId": "remove_admin_accounts__account_id__delete",
         "parameters": [
           {
@@ -259,10 +262,13 @@
             "description": "未携带有效令牌"
           },
           "403": {
-            "description": "需要管理员权限"
+            "description": "需要管理员权限 / 删自己 / 删管理员账号"
           },
           "404": {
             "description": "账号不存在"
+          },
+          "409": {
+            "description": "账号仍被比赛/赛事/对阵引用"
           },
           "422": {
             "description": "Validation Error",
@@ -281,7 +287,7 @@
           "accounts"
         ],
         "summary": "修改账号",
-        "description": "按字段局部更新（display_name / password / type，传哪个改哪个）。",
+        "description": "按字段局部更新（display_name / password / roles / speedrun_id，传哪个改哪个）。保护：不能移除系统中最后一个管理员的角色（防先降级再删除绕过账号删除守卫）。",
         "operationId": "update_admin_accounts__account_id__patch",
         "parameters": [
           {
@@ -319,7 +325,7 @@
             "description": "未携带有效令牌"
           },
           "403": {
-            "description": "需要管理员权限"
+            "description": "需要管理员权限 / 移除最后一个管理员角色"
           },
           "404": {
             "description": "账号不存在"
@@ -340,13 +346,68 @@
         }
       }
     },
+    "/admin/matches/{match_id}/archive": {
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "归档已结束比赛",
+        "description": "把已结束（ENDED）的比赛归档（写 archived_at）。归档是纯列表整理功能，与状态机正交：不影响 MatchStatus、日志、赛程推进与选手占用。归档后比赛仍出现在 /admin/matches 列表（带 archived_at，供前端筛选与取消归档），但 /me/matches 不再下发。",
+        "operationId": "archive_admin_matches__match_id__archive_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "400": {
+            "description": "比赛未结束 / 已归档"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/matches": {
       "get": {
         "tags": [
           "matches"
         ],
         "summary": "比赛列表",
-        "description": "返回全部比赛。",
+        "description": "返回全部比赛（含已归档，archived_at 非空表示已归档）；筛选/分页由前端客户端完成。",
         "operationId": "list_admin_matches_get",
         "responses": {
           "200": {
@@ -376,7 +437,7 @@
           "matches"
         ],
         "summary": "创建比赛",
-        "description": "管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。",
+        "description": "管理员创建一场比赛：指定赛制(BO)、单关计分方式、完整图池、指派双方选手/裁判/导播账号、开始倒计时延迟秒数。角色账号以用户名指定，服务端校验账号类型并解析为 id。win_threshold 省略时按 (bo//2)+1 推导。直接创建的比赛统一挂默认赛事（孤立比赛容器）。",
         "operationId": "create_admin_matches_post",
         "requestBody": {
           "content": {
@@ -427,7 +488,7 @@
           "matches"
         ],
         "summary": "强制结束比赛（管理员）",
-        "description": "把进行中（RUNNING/CREATED）的比赛标记为 ENDED，断开双方选手并广播结束。用于裁判弃赛/异常导致卡住时释放选手（否则该选手的下一场 begin_prep 被单场规则挡）。",
+        "description": "把进行中（RUNNING/CREATED）的比赛标记为 ENDED，断开双方选手并广播结束。能从比分推导胜方（达到取胜分数或领先）时走完整结束流程：记录 winner/final_result 并推进赛程；比分持平或无实时会话时仅标记 ENDED + 释放选手。用于裁判弃赛/异常导致卡住时释放选手（否则该选手的下一场 begin_prep 被单场规则挡）。",
         "operationId": "force_end_admin_matches__match_id__end_post",
         "parameters": [
           {
@@ -578,6 +639,61 @@
           },
           "409": {
             "description": "状态切换非法 / 选手在另一场进行中的比赛"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/matches/{match_id}/unarchive": {
+      "post": {
+        "tags": [
+          "matches"
+        ],
+        "summary": "取消归档",
+        "description": "把已归档的比赛恢复为未归档（archived_at 置空），/me/matches 重新对其成员下发。",
+        "operationId": "unarchive_admin_matches__match_id__unarchive_post",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "比赛不存在"
+          },
+          "400": {
+            "description": "比赛未归档"
           },
           "422": {
             "description": "Validation Error",
@@ -817,6 +933,132 @@
           },
           "409": {
             "description": "图池名冲突"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/ct-tags": {
+      "get": {
+        "tags": [
+          "ct-tags"
+        ],
+        "summary": "词条列表",
+        "description": "返回全部词条（按创建时间倒序）。",
+        "operationId": "list_admin_ct_tags_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CtTagOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Admin Ct Tags Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ct-tags"
+        ],
+        "summary": "创建词条",
+        "description": "管理员新增一个可被图池 CT 类别选择的自定义词条。",
+        "operationId": "create_admin_ct_tags_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CtTagCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CtTagOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "409": {
+            "description": "词条已存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/ct-tags/{tag_id}": {
+      "delete": {
+        "tags": [
+          "ct-tags"
+        ],
+        "summary": "删除词条",
+        "description": "删除词条库条目（不改动已引用它的图池/比赛；引用处名称仍可继续使用）。",
+        "operationId": "remove_admin_ct_tags__tag_id__delete",
+        "parameters": [
+          {
+            "name": "tag_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tag Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "需要管理员权限"
+          },
+          "404": {
+            "description": "词条不存在"
           },
           "422": {
             "description": "Validation Error",
@@ -1117,7 +1359,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1182,7 +1424,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1247,7 +1489,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1528,7 +1770,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "状态不符 / 选手不足 / 该赛制暂未实现"
+            "description": "状态不符 / 默认赛事 / 选手不足 / 该赛制暂未实现"
           },
           "503": {
             "description": "赛程引擎未就绪"
@@ -1715,7 +1957,7 @@
           "tournaments"
         ],
         "summary": "删除赛事",
-        "description": "仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）。",
+        "description": "仅 DRAFT 状态赛事可删除（已生成赛程的不可删，需先取消）；默认赛事（孤立比赛容器）不可删除。",
         "operationId": "remove_admin_tournaments__tournament_id__delete",
         "parameters": [
           {
@@ -1742,7 +1984,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态"
+            "description": "非 DRAFT 状态 / 默认赛事"
           },
           "422": {
             "description": "Validation Error",
@@ -1805,7 +2047,7 @@
             "description": "赛事/图池不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 分数非法"
+            "description": "非 DRAFT 状态 / 默认赛事 / 分数非法"
           },
           "422": {
             "description": "Validation Error",
@@ -1926,7 +2168,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 账号不存在或角色不符"
+            "description": "非 DRAFT 状态 / 默认赛事 / 账号不存在或角色不符"
           },
           "422": {
             "description": "Validation Error",
@@ -1991,7 +2233,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非 DRAFT 状态 / 长度不符 / 含非池内 id / 存在重复"
+            "description": "非 DRAFT 状态 / 默认赛事 / 长度不符 / 非池内 id / 重复"
           },
           "422": {
             "description": "Validation Error",
@@ -2046,7 +2288,7 @@
             "description": "赛事不存在"
           },
           "400": {
-            "description": "非瑞士轮 / 上一轮未完成 / 超过总轮数"
+            "description": "非瑞士轮 / 默认赛事 / 上一轮未完成 / 超过总轮数"
           },
           "422": {
             "description": "Validation Error",
@@ -2165,7 +2407,7 @@
           "me"
         ],
         "summary": "我参与的比赛",
-        "description": "返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。",
+        "description": "返回当前账号作为选手/裁判/导播参与的比赛；非结束的优先，创建时间倒序。已归档（archived_at 非空）的比赛不再下发。",
         "operationId": "matches_me_matches_get",
         "responses": {
           "200": {
@@ -2295,6 +2537,200 @@
         }
       }
     },
+    "/me/matches/{match_id}/stream-links": {
+      "put": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Save Stream Links",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "save_stream_links_me_matches__match_id__stream_links_put",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamLinksPut"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Stream Links",
+        "description": "Create a new function with partial application of the given arguments\nand keywords.",
+        "operationId": "stream_links_me_matches__match_id__stream_links_get",
+        "parameters": [
+          {
+            "name": "match_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Match Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinksError"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    },
     "/me/matches/{match_id}/start": {
       "post": {
         "tags": [
@@ -2356,7 +2792,7 @@
           "me"
         ],
         "summary": "查看赛事对阵树（赛事成员）",
-        "description": "选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。门控：须为该赛事参赛/裁判/导播/管理员。",
+        "description": "选手/裁判/导播（赛事成员）可读对阵树，含已结束对阵的比分。门控：须为该赛事参赛/裁判/导播/管理员；默认赛事按「参与过其名下任意比赛」判定（成员池恒空）。",
         "operationId": "tournament_bracket_me_tournaments__tournament_id__bracket_get",
         "parameters": [
           {
@@ -2402,13 +2838,65 @@
         }
       }
     },
+    "/me/tournaments/{tournament_id}": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "查看赛事详情（赛事成员）",
+        "description": "赛事成员（选手/裁判/导播/管理员）可读赛事基本信息（名称/状态等）。与列表端点不同，默认赛事（孤立比赛容器）不在 /me/tournaments 列表里，但参与过其名下任意比赛的账号可经本端点读取——导播舞台 Coming Soon 场景显示赛事名/状态用。",
+        "operationId": "tournament_detail_me_tournaments__tournament_id__get",
+        "parameters": [
+          {
+            "name": "tournament_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tournament Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TournamentOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带有效令牌"
+          },
+          "403": {
+            "description": "非该赛事成员"
+          },
+          "404": {
+            "description": "赛事不存在"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/tournaments/{tournament_id}/mappool": {
       "get": {
         "tags": [
           "me"
         ],
         "summary": "查看赛事图池（赛事成员）",
-        "description": "赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池（含 logo_url）；优先取第一场已生成比赛的图池。",
+        "description": "赛事成员（选手/裁判/导播/管理员）可读该赛事任一已生成比赛的图池（含 logo_url）；优先取第一场已生成比赛的图池。默认赛事按「参与过其名下任意比赛」判定成员，但其无 fixture，恒 404 无图池。",
         "operationId": "tournament_mappool_me_tournaments__tournament_id__mappool_get",
         "parameters": [
           {
@@ -2694,6 +3182,628 @@
         }
       }
     },
+    "/speedrun/game-meta": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "游戏分类与关卡元数据（speedrun.com 代理）",
+        "description": "透传 /games/{id}?embed=categories,levels；管理端映射选择器与 categoryinfo 场景自动解析的选项源。默认 HFF，game_id 可选 Category Extensions 子游戏。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
+        "operationId": "game_meta_speedrun_game_meta_get",
+        "parameters": [
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/leaderboard": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "项目排行榜（speedrun.com 代理）",
+        "description": "单关传 level_id 走 IL 端点；var-{变量id}={值id} 为子分类过滤（原样转发）。内存缓存 60 秒。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
+        "operationId": "leaderboard_speedrun_leaderboard_get",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "分类 id",
+              "title": "Category Id"
+            },
+            "description": "分类 id"
+          },
+          {
+            "name": "level_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "单关 IL 的关卡 id",
+              "title": "Level Id"
+            },
+            "description": "单关 IL 的关卡 id"
+          },
+          {
+            "name": "top",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "description": "名次数",
+              "default": 15,
+              "title": "Top"
+            },
+            "description": "名次数"
+          },
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/pb": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "用户的全部个人最好成绩（代理）",
+        "description": "透传 /users/{id}/personal-bests?game={id}；前端按分类/关卡/子分类过滤出当前项目的 PB（名次可超出榜单 Top N）。game_id 默认 HFF。内存缓存 60 秒。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
+        "operationId": "pb_speedrun_pb_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "speedrun.com 用户 id",
+              "title": "User Id"
+            },
+            "description": "speedrun.com 用户 id"
+          },
+          {
+            "name": "game_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "游戏 id（默认 HFF）",
+              "default": "k6qgnmdg",
+              "title": "Game Id"
+            },
+            "description": "游戏 id（默认 HFF）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "游戏 id 不在白名单"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/user": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "按用户名/ID 解析 speedrun.com 用户（代理）",
+        "description": "透传 /users?lookup=；找不到时上游返回空 data。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
+        "operationId": "user_speedrun_user_get",
+        "parameters": [
+          {
+            "name": "lookup",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "用户名或 8 位用户 id",
+              "title": "Lookup"
+            },
+            "description": "用户名或 8 位用户 id"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speedrun/variables": {
+      "get": {
+        "tags": [
+          "speedrun"
+        ],
+        "summary": "分类/关卡的子分类变量（speedrun.com 代理）",
+        "description": "level_id 优先走 /levels/{id}/variables，否则 /categories/{id}/variables。内存缓存 10 分钟。mode：auto（默认）走内存 TTL 缓存并在上游成功后写穿持久化；cached 只读持久化缓存秒回 {fetched_at, data} 信封（无缓存 200 双 null；最长可能旧至保留期 7 天）；refresh 绕过内存强制拉上游并比对写回（与缓存不同才更新文档，相同只更 fetched_at）。持久化缓存按速通项目区分存储。",
+        "operationId": "variables_speedrun_variables_get",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "分类 id",
+              "title": "Category Id"
+            },
+            "description": "分类 id"
+          },
+          {
+            "name": "level_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "关卡 id（优先）",
+              "title": "Level Id"
+            },
+            "description": "关卡 id（优先）"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "cached",
+                "refresh"
+              ],
+              "type": "string",
+              "description": "读取模式（SWR）",
+              "default": "auto",
+              "title": "Mode"
+            },
+            "description": "读取模式（SWR）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "category_id 与 level_id 均缺失"
+          },
+          "420": {
+            "description": "speedrun.com 限流（原状态码透传）"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bilibili/live/stream": {
+      "get": {
+        "tags": [
+          "bilibili"
+        ],
+        "summary": "B站直播 FLV 同源代理流",
+        "description": "后端以 B站要求的 Referer/Origin/UA 拉取 HTTP-FLV 并转发；前端用 mpegts.js 播放同源流。需 ?token= 传导播/裁判/管理 JWT。",
+        "operationId": "stream_bilibili_live_stream_get",
+        "parameters": [
+          {
+            "name": "room_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "B站直播间号",
+              "title": "Room Id"
+            },
+            "description": "B站直播间号"
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "导播/裁判/管理 JWT",
+              "title": "Token"
+            },
+            "description": "导播/裁判/管理 JWT"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效令牌"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "直播间未开播"
+          },
+          "502": {
+            "description": "B站接口/流地址错误"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/youtube/live/file": {
+      "get": {
+        "tags": [
+          "youtube"
+        ],
+        "summary": "YouTube HLS 分片/子清单同源代理",
+        "description": "代理 YouTube HLS 清单或视频分片；清单会再次重写为同源地址，分片原样转发。需 ?token= 传导播/裁判/管理 JWT。",
+        "operationId": "file_youtube_live_file_get",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YouTube googlevideo 上游 URL",
+              "title": "Url"
+            },
+            "description": "YouTube googlevideo 上游 URL"
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "导播/裁判/管理 JWT",
+              "title": "Token"
+            },
+            "description": "导播/裁判/管理 JWT"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效令牌"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "502": {
+            "description": "上游请求失败"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/youtube/live/stream": {
+      "get": {
+        "tags": [
+          "youtube"
+        ],
+        "summary": "YouTube 直播 HLS 同源代理流",
+        "description": "后端用 yt-dlp 解析 YouTube 直播 HLS 视频流地址，返回重写为同源 `/api/youtube/live/file` 的播放列表；前端用 hls.js 播放。需 ?token= 传导播/裁判/管理 JWT。",
+        "operationId": "stream_youtube_live_stream_get",
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YouTube 视频 ID",
+              "title": "Video Id"
+            },
+            "description": "YouTube 视频 ID"
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "导播/裁判/管理 JWT",
+              "title": "Token"
+            },
+            "description": "导播/裁判/管理 JWT"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效令牌"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "视频未开播"
+          },
+          "502": {
+            "description": "YouTube 解析/清单错误"
+          },
+          "503": {
+            "description": "服务端缺少 yt-dlp"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/uploads/sign": {
       "get": {
         "tags": [
@@ -2818,6 +3928,18 @@
             "type": "array",
             "title": "Roles",
             "description": "角色集合（可多选）：1=选手 2=裁判 3=导播 4=管理员"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id",
+            "description": "speedrun.com 账号绑定（用户名或 8 位用户 id），可空"
           }
         },
         "type": "object",
@@ -2849,6 +3971,17 @@
           "display_name": {
             "type": "string",
             "title": "Display Name"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id"
           },
           "created_at": {
             "type": "string",
@@ -2914,6 +4047,17 @@
               }
             ],
             "title": "Roles"
+          },
+          "speedrun_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Id"
           }
         },
         "type": "object",
@@ -2939,6 +4083,13 @@
               }
             ],
             "title": "Time Ms"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons"
           }
         },
         "type": "object",
@@ -2953,7 +4104,8 @@
         "enum": [
           1,
           2,
-          3
+          3,
+          4
         ],
         "title": "AttemptStatus",
         "description": "单关项目单次尝试状态。"
@@ -3061,6 +4213,20 @@
             },
             "type": "array",
             "title": "Picks"
+          },
+          "ct_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ct Tags"
           }
         },
         "type": "object",
@@ -3148,6 +4314,44 @@
         ],
         "title": "CollectionConfig",
         "description": "关卡合集配置（插件定义格式，服务端原样存储，下发前把关卡 id 展开为名字）。"
+      },
+      "CtTagCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "词条原文（唯一，如 Glitchless / Achievement）"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CtTagCreate"
+      },
+      "CtTagOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "title": "CtTagOut"
       },
       "DisplayNameUpdate": {
         "properties": {
@@ -3638,6 +4842,13 @@
               }
             ],
             "title": "Total Ms"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons"
           }
         },
         "type": "object",
@@ -3687,6 +4898,24 @@
             "type": "string",
             "title": "Password",
             "description": "口令明文（服务端仅存哈希）"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "admin",
+                  "referee",
+                  "director",
+                  "player"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint",
+            "description": "登录端（可选，旧客户端不传）：校验账号 roles 含对应角色（admin→ADMIN/referee→REFEREE/director→DIRECTOR/player→PLAYER），无该角色则 403 ENDPOINT_FORBIDDEN 且不签发令牌；不传/null 时不做角色校验，行为与旧版完全一致。"
           }
         },
         "type": "object",
@@ -4025,6 +5254,28 @@
             "title": "Player B Username",
             "default": ""
           },
+          "player_a_speedrun": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player A Speedrun"
+          },
+          "player_b_speedrun": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player B Speedrun"
+          },
           "referee_id": {
             "type": "string",
             "title": "Referee Id"
@@ -4094,6 +5345,18 @@
               }
             ],
             "title": "Ended At"
+          },
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
           }
         },
         "type": "object",
@@ -4364,6 +5627,46 @@
             },
             "type": "array",
             "title": "Tags"
+          },
+          "single_scoring": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Single Scoring"
+          },
+          "speedrun_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Category Id"
+          },
+          "speedrun_level_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speedrun Level Id"
+          },
+          "speedrun_variables": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Speedrun Variables"
           }
         },
         "type": "object",
@@ -4608,6 +5911,149 @@
         ],
         "title": "SeedOrderBody",
         "description": "设置种子序（生成赛程时决定对阵排位）。"
+      },
+      "StreamLinksError": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/StreamLinksErrorDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "StreamLinksError"
+      },
+      "StreamLinksErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "StreamLinksErrorDetail"
+      },
+      "StreamLinksOut": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "maximum": 9007199254740991.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "default": 0
+          },
+          "hlsA": {
+            "type": "string",
+            "title": "Hlsa",
+            "default": ""
+          },
+          "hlsB": {
+            "type": "string",
+            "title": "Hlsb",
+            "default": ""
+          },
+          "embedA": {
+            "type": "string",
+            "title": "Embeda",
+            "default": ""
+          },
+          "embedB": {
+            "type": "string",
+            "title": "Embedb",
+            "default": ""
+          },
+          "updated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At Ms"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "match_id": {
+            "type": "string",
+            "title": "Match Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "match_id"
+        ],
+        "title": "StreamLinksOut"
+      },
+      "StreamLinksPut": {
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "maximum": 9007199254740991.0,
+            "minimum": 0.0,
+            "title": "Expected Version"
+          },
+          "hlsA": {
+            "type": "string",
+            "maxLength": 4096,
+            "title": "Hlsa"
+          },
+          "hlsB": {
+            "type": "string",
+            "maxLength": 4096,
+            "title": "Hlsb"
+          },
+          "embedA": {
+            "type": "string",
+            "maxLength": 4096,
+            "title": "Embeda"
+          },
+          "embedB": {
+            "type": "string",
+            "maxLength": 4096,
+            "title": "Embedb"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_version",
+          "hlsA",
+          "hlsB",
+          "embedA",
+          "embedB"
+        ],
+        "title": "StreamLinksPut"
       },
       "TokenResponse": {
         "properties": {
@@ -5235,6 +6681,22 @@
     {
       "name": "logs",
       "description": "日志查询（管理员/裁判/导播）：比赛日志、聊天日志、回合明细"
+    },
+    {
+      "name": "bilibili",
+      "description": "B站直播流同源代理（导播选手画面）：以 B站要求的请求头拉取 HTTP-FLV 并转发给前端 mpegts.js"
+    },
+    {
+      "name": "youtube",
+      "description": "YouTube 直播 HLS 同源代理（导播选手画面）：后端解析直播 HLS 地址并转发播放列表与分片，前端用 hls.js 播放，绕开 iframe"
+    },
+    {
+      "name": "speedrun",
+      "description": "speedrun.com 只读代理（裁判/导播/管理员）：图池映射选择器与项目信息场景的选项/榜单数据源；响应持久化到 Mongo（按速通项目区分），支持 auto/cached/refresh 三模式（前端 SWR）"
+    },
+    {
+      "name": "ct-tags",
+      "description": "词条库（管理员）：维护 CT 类别图池可选的全局词条"
     }
   ]
 }

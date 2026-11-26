@@ -19,8 +19,11 @@ from twilightcupbackend.datatypes import (
 
 
 def _drain(ws, n: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(n):
-        ws.receive_json()
+    remaining = n
+    while remaining:
+        message = ws.receive_json()
+        if message["type"] != "stream_links_update":
+            remaining -= 1
 
 
 def _recv_until(ws, predicate, max_msgs: int = 30):  # type: ignore[no-untyped-def]
@@ -39,7 +42,7 @@ def test_director_multi_connection_not_evicted(world) -> None:  # type: ignore[n
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d1,
         client.websocket_connect(f"/ws/{tokens['dri']}") as ws_d2,
     ):
-        _drain(ws_pa, 5)
+        _drain(ws_pa, 6)
         _drain(ws_d1, 5)
         _drain(ws_d2, 5)
         ws_pa.send_json({"type": "chat", "text": "broadcast-hi"})
